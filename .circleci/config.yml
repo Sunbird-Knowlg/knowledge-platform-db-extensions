@@ -1,0 +1,47 @@
+version: 2.1
+executorType: machine
+jobs:
+  build:
+    docker:
+      - image: circleci/openjdk:14-jdk-buster-node-browsers-legacy
+    steps:
+      - checkout
+      - restore_cache:
+          key: kp-db-extensions-build-cache-{{ checksum "pom.xml" }}
+      - run:
+          name: Run build
+          command: |
+            mvn clean install -DskipTests
+      - save_cache:
+          paths:
+            - ~/.m2
+          key: kp-db-extensions-build-cache-{{ checksum "pom.xml" }}
+
+  unit-tests:
+    docker:
+      - image: circleci/openjdk:14-jdk-buster-node-browsers-legacy
+      - image: circleci/redis:latest
+    parallelism: 1
+    steps:
+      - checkout
+      - restore_cache:
+          key: kp-db-extensions-test-cache-{{ checksum "pom.xml" }}
+      - run:
+          name: Setup environment and run tests
+          command: |
+            mvn scoverage:report
+            JAVA_REPORT_PATHS=`find /home/circleci/project  -iname jacoco.xml | awk 'BEGIN { RS = "" ; FS = "\n"; OFS = ","}{$1=$1; print $0}'`
+            mvn verify sonar:sonar -Dsonar.projectKey=project-sunbird_knowledge-platform-db-extensions -Dsonar.organization=project-sunbird -Dsonar.host.url=https://sonarcloud.io -Dsonar.coverage.jacoco.xmlReportPaths=${JAVA_REPORT_PATHS}
+      - save_cache:
+          paths:
+            - ~/.m2
+          key: kp-db-extensions-test-cache-{{ checksum "pom.xml" }}
+
+workflows:
+  version: 2.1
+  build-then-test:
+      jobs:
+        - build
+        - unit-tests:
+            requires:
+              - build
