@@ -1,2 +1,7 @@
-
+/target/
 .DS_Store
+/.idea/
+*.iml
+*.log
+neo4j-extensions/learning-graph-extension/dependency-reduced-pom.xml
+
