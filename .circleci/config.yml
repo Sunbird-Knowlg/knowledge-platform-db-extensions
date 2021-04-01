@@ -4,6 +4,7 @@ jobs:
   build:
     docker:
       - image: circleci/openjdk:14-jdk-buster-node-browsers-legacy
+    resource_class: small
     steps:
       - checkout
       - restore_cache:
@@ -21,6 +22,7 @@ jobs:
     docker:
       - image: circleci/openjdk:14-jdk-buster-node-browsers-legacy
       - image: circleci/redis:latest
+    resource_class: small
     parallelism: 1
     steps:
       - checkout
@@ -29,6 +31,8 @@ jobs:
       - run:
           name: Setup environment and run tests
           command: |
+            find ./ -type f -name "log4j2.xml" -print0 | xargs -0 sed -i -e 's/\/data\/logs/logs/g'
+            find ./ -type f -name "*.java" -print0 | xargs -0 sed -i -e 's/\/data\//~\//g'
             mvn clean verify sonar:sonar -Dsonar.projectKey=project-sunbird_knowledge-platform-db-extensions -Dsonar.organization=project-sunbird -Dsonar.host.url=https://sonarcloud.io -Dsonar.surefire.reportsPath=/home/circleci/project/transaction-event-handler/target/surefire-reports
       - save_cache:
           paths:
