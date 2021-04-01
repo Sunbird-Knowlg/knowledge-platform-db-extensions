@@ -29,7 +29,7 @@ jobs:
       - run:
           name: Setup environment and run tests
           command: |
-            mvn scoverage:report
+            mvn jacoco:report
             JAVA_REPORT_PATHS=`find /home/circleci/project  -iname jacoco.xml | awk 'BEGIN { RS = "" ; FS = "\n"; OFS = ","}{$1=$1; print $0}'`
             mvn verify sonar:sonar -Dsonar.projectKey=project-sunbird_knowledge-platform-db-extensions -Dsonar.organization=project-sunbird -Dsonar.host.url=https://sonarcloud.io -Dsonar.coverage.jacoco.xmlReportPaths=${JAVA_REPORT_PATHS}
       - save_cache:
