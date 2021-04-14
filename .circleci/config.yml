@@ -21,7 +21,6 @@ jobs:
   unit-tests:
     docker:
       - image: circleci/openjdk:14-jdk-buster-node-browsers-legacy
-      - image: circleci/redis:latest
     resource_class: small
     parallelism: 1
     steps:
@@ -34,6 +33,14 @@ jobs:
             find ./ -type f -name "log4j2.xml" -print0 | xargs -0 sed -i -e 's/\/data\/logs/\/home\/circleci\/logs/g'
             find ./ -type f -name "*.java" -print0 | xargs -0 sed -i -e 's/\/data\/logs/\/home\/circleci\/logs/g'
             mvn clean verify sonar:sonar -Dsonar.projectKey=project-sunbird_knowledge-platform-db-extensions -Dsonar.organization=project-sunbird -Dsonar.host.url=https://sonarcloud.io -Dsonar.surefire.reportsPath=/home/circleci/project/transaction-event-handler/target/surefire-reports
+      - run:
+          name: Save test results
+          command: |
+            mkdir -p ~/test-results/junit/
+            find . -type f -regex ".*/target/surefire-reports/.*xml" -exec cp {} ~/test-results/junit/ \;
+          when: always
+      - store_test_results:
+          path: ~/test-results
       - save_cache:
           paths:
             - ~/.m2
