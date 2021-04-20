@@ -1,0 +1,56 @@
+version: 2.1
+executorType: machine
+jobs:
+  build:
+    docker:
+      - image: circleci/openjdk:14-jdk-buster-node-browsers-legacy
+    resource_class: small
+    steps:
+      - checkout
+      - restore_cache:
+          key: kp-db-extensions-build-cache-{{ checksum "pom.xml" }}
+      - run:
+          name: Run build
+          command: |
+            mvn clean install -DskipTests
+      - save_cache:
+          paths:
+            - ~/.m2
+          key: kp-db-extensions-build-cache-{{ checksum "pom.xml" }}
+
+  unit-tests:
+    docker:
+      - image: circleci/openjdk:14-jdk-buster-node-browsers-legacy
+    resource_class: small
+    parallelism: 1
+    steps:
+      - checkout
+      - restore_cache:
+          key: kp-db-extensions-test-cache-{{ checksum "pom.xml" }}
+      - run:
+          name: Setup environment and run tests
+          command: |
+            find ./ -type f -name "log4j2.xml" -print0 | xargs -0 sed -i -e 's/\/data\/logs/\/home\/circleci\/logs/g'
+            find ./ -type f -name "*.java" -print0 | xargs -0 sed -i -e 's/\/data\/logs/\/home\/circleci\/logs/g'
+            mvn clean verify sonar:sonar -Dsonar.projectKey=project-sunbird_knowledge-platform-db-extensions -Dsonar.organization=project-sunbird -Dsonar.host.url=https://sonarcloud.io -Dsonar.surefire.reportsPath=/home/circleci/project/transaction-event-handler/target/surefire-reports
+      - run:
+          name: Save test results
+          command: |
+            mkdir -p ~/test-results/junit/
+            find . -type f -regex ".*/target/surefire-reports/.*xml" -exec cp {} ~/test-results/junit/ \;
+          when: always
+      - store_test_results:
+          path: ~/test-results
+      - save_cache:
+          paths:
+            - ~/.m2
+          key: kp-db-extensions-test-cache-{{ checksum "pom.xml" }}
+
+workflows:
+  version: 2.1
+  build-then-test:
+      jobs:
+        - build
+        - unit-tests:
+            requires:
+              - build

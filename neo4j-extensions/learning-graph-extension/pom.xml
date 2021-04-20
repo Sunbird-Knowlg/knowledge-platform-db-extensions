@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>org.sunbird</groupId>
+	<artifactId>learning-graph-extension</artifactId>
+	<version>1.1</version>
+
+	<dependencies>
+		<dependency>
+			<groupId>org.sunbird</groupId>
+			<artifactId>transaction-event-handler</artifactId>
+			<version>1.1</version>
+			<type>jar</type>
+		</dependency>
+	</dependencies>
+
+	<build>
+		<plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.8.1</version>
+                <configuration>
+                    <release>11</release>
+                </configuration>
+            </plugin>
+			<plugin>
+	            <groupId>org.apache.maven.plugins</groupId>
+	            <artifactId>maven-shade-plugin</artifactId>
+	            <version>2.4.3</version>
+	            <executions>
+	                <execution>
+	                    <phase>package</phase>
+	                    <goals>
+	                        <goal>shade</goal>
+	                    </goals>
+	                    <configuration>
+	                        <artifactSet>
+				                <excludes>
+				                	<exclude>org.neo4j:*</exclude>
+				                	<exclude>org.apache.lucene:*</exclude>
+				                	<exclude>org.scala-lang:*</exclude>
+				                	<exclude>org.ow2.asm:*</exclude>
+				                	<exclude>org.parboiled:*</exclude>
+				                	<exclude>net.sf.opencsv:*</exclude>
+				                	<exclude>com.googlecode.concurrentlinkedhashmap:*</exclude>
+				                	<exclude>io.netty:*</exclude>
+				                </excludes>
+				             </artifactSet>
+	                    </configuration>
+	                </execution>
+	            </executions>
+	        </plugin>
+	        <plugin>
+			    <groupId>org.apache.maven.plugins</groupId>
+			    <artifactId>maven-surefire-plugin</artifactId>
+                <version>2.20</version>
+			</plugin>
+			<plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.7.9</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>generate-code-coverage-report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+		</plugins>
+	</build>
+</project>
