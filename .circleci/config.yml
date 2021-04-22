@@ -32,7 +32,7 @@ jobs:
           command: |
             find ./ -type f -name "log4j2.xml" -print0 | xargs -0 sed -i -e 's/\/data\/logs/\/home\/circleci\/logs/g'
             find ./ -type f -name "*.java" -print0 | xargs -0 sed -i -e 's/\/data\/logs/\/home\/circleci\/logs/g'
-            mvn clean verify sonar:sonar -Dsonar.projectKey=project-sunbird_knowledge-platform-db-extensions -Dsonar.organization=project-sunbird -Dsonar.host.url=https://sonarcloud.io -Dsonar.surefire.reportsPath=/home/circleci/project/transaction-event-handler/target/surefire-reports
+            mvn clean verify sonar:sonar -Dsonar.projectKey=project-sunbird_knowledge-platform-db-extensions -Dsonar.organization=project-sunbird -Dsonar.host.url=https://sonarcloud.io -Dsonar.surefire.reportsPath=/home/circleci/project/transaction-event-handler/target/surefire-reports -Dsonar.coverage.jacoco.xmlReportPaths=/home/circleci/project/transaction-event-handler/target/site/jacoco/jacoco.xml
       - run:
           name: Save test results
           command: |
