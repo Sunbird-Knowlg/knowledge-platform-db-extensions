@@ -279,7 +279,7 @@ public class TraversalProc {
 				if (directionsList == null) {
 					throw new Exception("Directions field is mandatory for path expander");
 				}
-				Integer nodeCount = Integer.parseInt((String) pathExpander.get("nodeCount"));
+				Integer pathNodeCount = Integer.parseInt((String) pathExpander.get("nodeCount"));
 
 				RelationshipType[] types = new RelationshipType[relationTypes.size()];
 				Direction[] directions = new Direction[directionsList.size()];
@@ -295,7 +295,7 @@ public class TraversalProc {
 				}
 				this.directions = directions;
 				this.types = types;
-				this.nodeCount = nodeCount;
+				this.nodeCount = pathNodeCount;
 			}
 		}
 
