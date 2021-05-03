@@ -44,7 +44,7 @@ By default, Neo4j requires authentication and requires us to first login with ne
 
 3. After running the above command, neo4j instance will be created and container starts running, we can verify the same by accessing [neo4j browser](http://localhost:7474/browser).
 
-### Running Neo4j with knowledge-platform-db-extensions plugins:
+### Running neo4j with knowledge-platform-db-extensions plugins:
 1. Get custom-procedures & learning-graph-extensions jar files from the corresponding modules target directory and place them in neo4j plugins folder which we created in our local directory.
 2. Restart the neo4j container in docker to load plugins.
 3. To verify whether log events are generating or not, execute the following query in neo4j:
