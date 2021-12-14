@@ -2,12 +2,12 @@
 <Configuration status="WARN">
 	<Appenders>
 		<Console name="Console" target="SYSTEM_OUT">
-			<PatternLayout pattern="%d [%t] %-5level %logger{36} - %msg%n" />
+			<PatternLayout pattern="%d [%t] %-5level %logger{36} - %msg{nolookups}%n" />
 		</Console>
 		<RollingFile name="RollingFileAppender" fileName="/data/logs/neo4j_learning_extension.log"
 			filePattern="/data/logs/neo4j_learning_extension-%d{yyyy-MM-dd}-%i.log">
 			<PatternLayout>
-				<Pattern>%d [%t] %-5level %logger{36} - %msg%n
+				<Pattern>%d [%t] %-5level %logger{36} - %msg{nolookups}%n
 				</Pattern>
 			</PatternLayout>
 			<Policies>
@@ -19,7 +19,7 @@
 		<RollingRandomAccessFile name="GraphEventAppender" fileName="/data/logs/learning_graph_event_neo4j.log"
 			filePattern="/data/logs/learning_graph_event_neo4j-%d{yyyy-MM-dd}-%i.log">
 			<PatternLayout>
-				<Pattern>%d %msg%n</Pattern>
+				<Pattern>%d %msg{nolookups}%n</Pattern>
 			</PatternLayout>
 			<Policies>
                 <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
