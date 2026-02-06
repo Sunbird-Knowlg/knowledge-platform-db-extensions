@@ -41,14 +41,7 @@ public class GraphLogProcessor {
     private MessageConverter converter;
     private boolean isStarted = false;
 
-    // LRU Cache for timestamp-based deduplication (nodeUniqueId ->
-    // lastProcessedTimestamp)
-    private Map<String, Instant> lastProcessedTimestamps = new LinkedHashMap<String, Instant>(1000, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, Instant> eldest) {
-            return size() > 1000;
-        }
-    };
+
 
     // Event buffering for merging
     private Map<String, List<BufferedEvent>> eventBuffer = new ConcurrentHashMap<>();
@@ -278,16 +271,10 @@ public class GraphLogProcessor {
             Instant currentTimestamp = getLastUpdatedOn(event);
 
             if (nodeUniqueId != null && currentTimestamp != null) {
-                Instant lastProcessed = lastProcessedTimestamps.get(nodeUniqueId);
-                if (lastProcessed != null && !currentTimestamp.isAfter(lastProcessed)) {
-                    logger.info("Skipping older/duplicate event for node {} (current: {}, last processed: {})",
-                            nodeUniqueId, currentTimestamp, lastProcessed);
-                    return;
-                }
-                logger.info("Processing event for node {} with timestamp {} (last processed: {})",
-                        nodeUniqueId, currentTimestamp, lastProcessed);
+                logger.info("Processing event for node {} with timestamp {}",
+                        nodeUniqueId, currentTimestamp);
             } else {
-                logger.warn("Cannot perform timestamp filtering for node {} (nodeUniqueId: {}, timestamp: {})",
+                logger.warn("Cannot extract timestamp for node {} (nodeUniqueId: {}, timestamp: {})",
                         vertex.id(), nodeUniqueId, currentTimestamp);
             }
 
@@ -437,7 +424,6 @@ public class GraphLogProcessor {
             // Single event, send as-is
             BufferedEvent buffered = events.get(0);
             sendEventToSinks(nodeUniqueId, buffered.event);
-            lastProcessedTimestamps.put(nodeUniqueId, buffered.lastUpdatedOn);
         } else {
             // Multiple events, merge them
             logger.info("Merging {} events for node {}", events.size(), nodeUniqueId);
@@ -450,7 +436,6 @@ public class GraphLogProcessor {
                     .orElse(Instant.now());
 
             sendEventToSinks(nodeUniqueId, mergedEvent);
-            lastProcessedTimestamps.put(nodeUniqueId, latestTimestamp);
         }
     }
 
