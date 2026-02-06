@@ -119,17 +119,11 @@ public class GraphLogProcessor {
 
         // Initialize Sinks
         sinks.clear();
-        String sinksConfig = (String) config.getOrDefault("graph.txn.log_processor.sinks", "KAFKA"); // Default to KAFKA
+        String sinksConfig = (String) config.getOrDefault("graph.txn.log_processor.sinks", "LOG"); // Default to LOG
         String[] sinkTypes = sinksConfig.split(",");
 
         for (String sinkType : sinkTypes) {
-            if ("KAFKA".equalsIgnoreCase(sinkType.trim())) {
-                String kafkaServers = (String) config.getOrDefault("kafka.bootstrap.servers", "localhost:9092");
-                String kafkaTopic = (String) config.getOrDefault("kafka.topics.graph.event",
-                        "sunbirddev.learning.graph.events");
-                sinks.add(new KafkaEventSink(kafkaServers, kafkaTopic));
-                logger.info("Added Kafka Event Sink (Topic: {})", kafkaTopic);
-            } else if ("LOG".equalsIgnoreCase(sinkType.trim())) {
+             if ("LOG".equalsIgnoreCase(sinkType.trim())) {
                 sinks.add(new LogFileEventSink());
                 logger.info("Added Log File Event Sink");
             }

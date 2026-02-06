@@ -48,9 +48,7 @@ try {
         config.put("graph.txn.log_processor.sinks", "LOG");
         config.put("graph.txn.log_processor.converter", "SUNBIRD_LEGACY");
         
-        // Kafka Configs (Optional if using defaults)
-        // config.put("kafka.bootstrap.servers", "kafka:29092");
-        // config.put("kafka.topics.graph.event", "sunbirddev.learning.graph.events");
+
 
         logger.info("CDC Config: " + config);
         

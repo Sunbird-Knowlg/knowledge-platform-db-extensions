@@ -12,7 +12,7 @@
     <description>CDC processor for JanusGraph transaction logs with Kafka publishing</description>
     <properties>
         <janusgraph.version>1.1.0</janusgraph.version>
-        <kafka.version>2.5.0</kafka.version>
+
         <jackson.version>2.15.3</jackson.version>
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
@@ -26,12 +26,7 @@
             <version>${janusgraph.version}</version>
             <scope>provided</scope>
         </dependency>
-        <!-- Kafka Client (Shaded) -->
-        <dependency>
-            <groupId>org.apache.kafka</groupId>
-            <artifactId>kafka-clients</artifactId>
-            <version>${kafka.version}</version>
-        </dependency>
+
         <!-- Jackson (Provided) -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -59,36 +54,7 @@
                     <target>11</target>
                 </configuration>
             </plugin>
-            <!-- Maven Shade Plugin -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.2.4</version>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <artifactSet>
-                                <includes>
-                                    <include>org.apache.kafka:kafka-clients</include>
-                                    <include>com.github.luben:zstd-jni</include>
-                                    <include>org.lz4:lz4-java</include>
-                                    <include>org.xerial.snappy:snappy-java</include>
-                                </includes>
-                            </artifactSet>
-                            <relocations>
-                                <relocation>
-                                    <pattern>org.apache.kafka</pattern>
-                                    <shadedPattern>org.sunbird.janusgraph.cdc.kafka</shadedPattern>
-                                </relocation>
-                            </relocations>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
+
         </plugins>
     </build>
 </project>
