@@ -1,6 +1,7 @@
 package org.sunbird.janusgraph.cdc;
 
 import org.janusgraph.core.JanusGraphVertex;
+import org.janusgraph.core.log.Change;
 import org.janusgraph.core.log.ChangeState;
 import org.janusgraph.core.log.TransactionId;
 import org.slf4j.Logger;
@@ -53,6 +54,34 @@ public class TelemetryMessageConverter implements MessageConverter {
                 if (properties.containsKey("IL_UNIQUE_ID")) {
                     edata.put("nodeUniqueId", properties.get("IL_UNIQUE_ID"));
                 }
+            } catch (Exception e) {
+                logger.warn("Failed to extract properties for vertex {}", vertex.id(), e);
+            }
+        } else if ("UPDATE".equals(operationType)) {
+            Map<String, Object> properties = new HashMap<>();
+            try {
+                // 1. New/Updated Properties
+                changeState.getProperties(vertex, Change.ADDED).iterator().forEachRemaining(p -> {
+                    properties.put(p.key(), p.value());
+                });
+
+                // 2. Removed/Deleted Properties
+                changeState.getProperties(vertex, Change.REMOVED).iterator().forEachRemaining(p -> {
+                    if (!properties.containsKey(p.key())) {
+                        properties.put(p.key(), null);
+                    }
+                });
+                edata.put("properties", properties);
+            } catch (Exception e) {
+                logger.warn("Failed to extract properties for vertex {}", vertex.id(), e);
+            }
+        } else if ("DELETE".equals(operationType)) {
+            Map<String, Object> properties = new HashMap<>();
+            try {
+                vertex.properties().forEachRemaining(p -> {
+                    properties.put(p.key(), p.value());
+                });
+                edata.put("properties", properties);
             } catch (Exception e) {
                 logger.warn("Failed to extract properties for vertex {}", vertex.id(), e);
             }
