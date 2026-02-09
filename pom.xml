@@ -18,6 +18,7 @@
 
 	<modules>
 		<module>neo4j-extensions</module>
+		<module>janusgraph-cdc-extension</module>
 	</modules>
 	
 	<dependencies>
