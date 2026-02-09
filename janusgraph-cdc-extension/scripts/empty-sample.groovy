@@ -58,5 +58,9 @@ try {
     LoggerFactory.getLogger("cdc-bootstrap").error("Failed to bootstrap CDC", e)
 }
 
-// define the default TraversalSource to bind queries to - this one will be named "g".
-globals << [g : graph.traversal()]
+try {
+    // define the default TraversalSource to bind queries to - this one will be named "g".
+    globals << [g : graph.traversal()]
+} catch (Throwable e) {
+    LoggerFactory.getLogger("cdc-bootstrap").warn("Could not bind 'g' traversal source: {}", e.getMessage())
+}

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The JanusGraph CDC (Change Data Capture) Log Processor is a **standalone JAR** that runs **inside JanusGraph Server**. It automatically captures graph mutations and publishes them to Kafka **without requiring any application code changes**.
+The JanusGraph CDC (Change Data Capture) Log Processor is a **standalone JAR** that runs **inside JanusGraph Server**. It automatically captures graph mutations and processes them using configured sinks (e.g. LOG) **without requiring any application code changes**.
 
 **Key Point**: The JAR runs in a separate thread inside JanusGraph Server, not in knowledge-platform. knowledge-platform only needs to tag transactions with a `logIdentifier`.
 
@@ -12,7 +12,7 @@ The JanusGraph CDC (Change Data Capture) Log Processor is a **standalone JAR** t
 
 - **`src/main/java`**: Contains the Java source code for the extension.
     - `GraphLogProcessor.java`: The core logic for processing transaction logs.
-    - `KafkaEventProducer.java`: Handles publishing events to Kafka.
+
 - **`scripts/`**: Contains Groovy scripts for JanusGraph.
     - `register-cdc.groovy`: Script to register the CDC processor with JanusGraph.
     - `empty-sample.groovy`: Sample bootstrap script.
@@ -24,7 +24,7 @@ The JanusGraph CDC (Change Data Capture) Log Processor is a **standalone JAR** t
 ## Prerequisites
 
 - JanusGraph Server 1.1.0 (running in Docker)
-- Kafka (Optional - only if using KAFKA sink)
+
 - Maven (for building the JAR)
 - Application using JanusGraph
 
@@ -46,8 +46,7 @@ mvn clean package -DskipTests
 
 **What this JAR contains**:
 - `GraphLogProcessor.java` - Main processor that reads transaction logs
-- `KafkaEventProducer.java` - Kafka publisher
-- Shaded Kafka client libraries (to avoid conflicts)
+
 
 ---
 
@@ -102,7 +101,7 @@ log.learning_graph_events.read-interval=500
 The bootstrap script (`scripts/register-cdc.groovy`) is configured to:
 1. Load the `GraphLogProcessor` class
 2. Start it with the server's graph instance
-3. Pass Configuration (Sinks, Converters, Kafka)
+3. Pass Configuration (Sinks, Converters)
 
 **Location**: `/opt/janusgraph/scripts/register-cdc.groovy`
 
@@ -115,8 +114,7 @@ Map<String, Object> config = new HashMap<>();
 config.put("graph.txn.log_processor.sinks", "LOG"); 
 // Converter: TELEMETRY (Custom), DEFAULT (Legacy)
 config.put("graph.txn.log_processor.converter", "TELEMETRY"); 
-// config.put("kafka.bootstrap.servers", "localhost:9092");
-// config.put("kafka.topics.graph.event", "sunbirddev.learning.graph.events");
+
 
 GraphLogProcessor.start(graphInstance, config);
 ```
@@ -143,6 +141,7 @@ To write these events to a separate file, you need to add an Appender and Logger
                 <TimeBasedTriggeringPolicy />
                 <SizeBasedTriggeringPolicy size="100 MB"/>
             </Policies>
+            <DefaultRolloverStrategy max="20"/>
         </RollingFile>
     </Appenders>
     <Loggers>
@@ -189,16 +188,16 @@ INFO  org.sunbird.janusgraph.cdc.GraphLogProcessor - GraphLogProcessor started s
 
 ---
 
-## Step 6: Configure Your Application
+## Step 7: Configure Your Application
 
-### 6.1 Enable Transaction Logging
+### 7.1 Enable Transaction Logging
 Add to knowledge-platform configuration (e.g., `application.conf`):
 
 ```hocon
 graph.txn.enable_log = true
 ```
 
-### 6.2 Verify Application Code
+### 7.2 Verify Application Code
 Your application should use this pattern:
 
 ```java
@@ -219,9 +218,9 @@ if (TXN_LOG_ENABLED) {
 
 ---
 
-## Step 7: Verify CDC Pipeline is Working
+## Step 8: Verify CDC Pipeline is Working
 
-### 7.1 Check GraphLogProcessor Status
+### 8.1 Check GraphLogProcessor Status
 ```bash
 docker logs sunbird_janusgraph | grep -E "GraphLogProcessor|CDC:"
 ```
@@ -229,12 +228,11 @@ docker logs sunbird_janusgraph | grep -E "GraphLogProcessor|CDC:"
 Expected output:
 ```
 INFO  org.sunbird.janusgraph.cdc.GraphLogProcessor.start - Starting GraphLogProcessor...
-INFO  org.sunbird.janusgraph.cdc.GraphLogProcessor.start - Kafka Bootstrap Servers: kafka:29092
-INFO  org.sunbird.janusgraph.cdc.GraphLogProcessor.start - Kafka Topic: sunbirddev.learning.graph.events
+
 INFO  org.sunbird.janusgraph.cdc.GraphLogProcessor.start - GraphLogProcessor started successfully.
 ```
 
-### 7.2 Create Test Content via API
+### 8.2 Create Test Content via API
 ```bash
 curl -X POST http://localhost:9000/content/v3/create \
   -H "Content-Type: application/json" \
@@ -253,7 +251,7 @@ curl -X POST http://localhost:9000/content/v3/create \
   }'
 ```
 
-### 7.3 Check for CDC Event Logs
+### 8.3 Check for CDC Event Logs
 ```bash
 docker logs sunbird_janusgraph | grep "CDC: Received transaction"
 ```
@@ -263,48 +261,20 @@ Expected output:
 INFO  org.sunbird.janusgraph.cdc.GraphLogProcessor - CDC: Received transaction id: ...
 ```
 
-### 7.4 Verify Events in Kafka
-```bash
-docker exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server localhost:9092 \
-  --topic sunbirddev.learning.graph.events \
-  --from-beginning \
-  --timeout-ms 3000
-```
 
-Expected output (JSON):
-```json
-{
-  "nodeGraphId": "domain",
-  "nodeUniqueId": "do_12345...",
-  "operationType": "CREATE",
-  "timestamp": 1768375015227,
-  "txId": "...",
-  "objectType": "Content",
-  "properties": {
-    "IL_UNIQUE_ID": "do_12345...",
-    "name": "CDC Test Content",
-    "code": "test.cdc.001",
-    ...
-  }
-}
-```
 
 ---
 
 ## Troubleshooting
 
-### No Events in Kafka?
+### No Events?
 
 **1. Check GraphLogProcessor Started**:
 ```bash
 docker logs sunbird_janusgraph | grep "GraphLogProcessor started successfully"
 ```
 
-**2. Check Kafka Connection**:
-```bash
-docker logs sunbird_janusgraph | grep "Kafka"
-```
+
 
 **3. Verify Application Uses logIdentifier**:
 ```bash
@@ -323,5 +293,5 @@ Edit `GraphLogProcessor.java` → `processVertexChange()` method to adjust prope
 ### Performance Issues?
 
 - Reduce `log.learning_graph_events.read-interval` for faster polling
-- Monitor Kafka producer metrics in JanusGraph logs
+
 - Consider batching for high-volume scenarios

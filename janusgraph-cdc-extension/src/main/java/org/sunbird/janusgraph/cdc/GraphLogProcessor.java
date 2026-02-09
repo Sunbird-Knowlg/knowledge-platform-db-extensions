@@ -267,7 +267,8 @@ public class GraphLogProcessor {
             Map<String, Object> event = converter.convert(vertex, changeState, operationType, txId);
 
             // 3. Filter based on lastUpdatedOn timestamp (skip older events)
-            String nodeUniqueId = (String) event.get("nodeUniqueId");
+            Object rawNodeUniqueId = event.get("nodeUniqueId");
+            String nodeUniqueId = rawNodeUniqueId != null ? String.valueOf(rawNodeUniqueId) : null;
             Instant currentTimestamp = getLastUpdatedOn(event);
 
             if (nodeUniqueId != null && currentTimestamp != null) {
@@ -287,7 +288,13 @@ public class GraphLogProcessor {
             // 5. Buffer event for merging (instead of sending immediately)
             if (nodeUniqueId != null && currentTimestamp != null) {
                 BufferedEvent bufferedEvent = new BufferedEvent(event, currentTimestamp);
-                eventBuffer.computeIfAbsent(nodeUniqueId, k -> new CopyOnWriteArrayList<>()).add(bufferedEvent);
+                eventBuffer.compute(nodeUniqueId, (k, v) -> {
+                    if (v == null) {
+                        v = new CopyOnWriteArrayList<>();
+                    }
+                    v.add(bufferedEvent);
+                    return v;
+                });
                 logger.debug("Buffered event for node {} with timestamp {}", nodeUniqueId, currentTimestamp);
             } else {
                 // If we can't extract timestamp, send immediately (fallback)
@@ -327,6 +334,11 @@ public class GraphLogProcessor {
                     Map<String, Object> props = (Map<String, Object>) txData.get("properties");
                     return props != null && props.containsKey("status");
                 }
+            }
+            // Check for flat properties (SimpleMessageConverter)
+            if (event.containsKey("properties")) {
+                Map<String, Object> props = (Map<String, Object>) event.get("properties");
+                return props != null && props.containsKey("status");
             }
         } catch (Exception e) {
             // ignore

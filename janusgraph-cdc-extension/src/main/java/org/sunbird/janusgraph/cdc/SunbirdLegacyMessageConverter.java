@@ -60,7 +60,11 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         map.put("ets", ets);
         map.put("mid", mid);
         map.put("requestId", null); // Not available in CDC
-        map.put("nodeGraphId", Long.parseLong(vertex.id().toString())); // Using vertex ID as numeric graph ID
+        try {
+            map.put("nodeGraphId", Long.parseLong(vertex.id().toString())); // Using vertex ID as numeric graph ID
+        } catch (NumberFormatException e) {
+            map.put("nodeGraphId", 0L); // Default if non-numeric
+        }
         map.put("graphId", "domain"); // Default
 
         // Operation Type
@@ -116,6 +120,7 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
                 changeState.getProperties(vertex, Change.REMOVED).iterator().forEachRemaining(p -> {
                     String key = p.key();
                     if (!processedKeys.contains(key)) {
+                        processedKeys.add(key); // Mark as processed to avoid overwrite
                         Map<String, Object> valMap = new HashMap<>();
                         valMap.put("ov", processValue(key, p.value()));
                         valMap.put("nv", null);
