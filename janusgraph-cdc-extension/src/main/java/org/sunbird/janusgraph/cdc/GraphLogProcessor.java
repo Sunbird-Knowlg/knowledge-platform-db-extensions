@@ -41,8 +41,6 @@ public class GraphLogProcessor {
     private MessageConverter converter;
     private boolean isStarted = false;
 
-
-
     // Event buffering for merging
     private Map<String, List<BufferedEvent>> eventBuffer = new ConcurrentHashMap<>();
     private long bufferWindowMs = 1000; // 1 second default
@@ -116,7 +114,7 @@ public class GraphLogProcessor {
         String[] sinkTypes = sinksConfig.split(",");
 
         for (String sinkType : sinkTypes) {
-             if ("LOG".equalsIgnoreCase(sinkType.trim())) {
+            if ("LOG".equalsIgnoreCase(sinkType.trim())) {
                 sinks.add(new LogFileEventSink());
                 logger.info("Added Log File Event Sink");
             }
@@ -259,6 +257,15 @@ public class GraphLogProcessor {
     private void processVertexChange(JanusGraphVertex vertex, ChangeState changeState, String operationType,
             TransactionId txId, Map<String, Map<String, Object>> propertyDiffs) {
         try {
+            // 1. Extract IL_UNIQUE_ID directly from vertex (the true unique identifier)
+            String ilUniqueId = null;
+            try {
+                if (vertex.property("IL_UNIQUE_ID").isPresent()) {
+                    ilUniqueId = String.valueOf(vertex.property("IL_UNIQUE_ID").value());
+                }
+            } catch (Exception e) {
+                logger.debug("Could not extract IL_UNIQUE_ID from vertex {}", vertex.id(), e);
+            }
 
             // 2. Convert message using the Strategy Pattern
             // We now delegate all operations (including UPDATE) to the converter.
@@ -266,39 +273,33 @@ public class GraphLogProcessor {
             // full snapshots.
             Map<String, Object> event = converter.convert(vertex, changeState, operationType, txId);
 
-            // 3. Filter based on lastUpdatedOn timestamp (skip older events)
-            Object rawNodeUniqueId = event.get("nodeUniqueId");
-            String nodeUniqueId = rawNodeUniqueId != null ? String.valueOf(rawNodeUniqueId) : null;
-            Instant currentTimestamp = getLastUpdatedOn(event);
-
-            if (nodeUniqueId != null && currentTimestamp != null) {
-                logger.info("Processing event for node {} with timestamp {}",
-                        nodeUniqueId, currentTimestamp);
-            } else {
-                logger.warn("Cannot extract timestamp for node {} (nodeUniqueId: {}, timestamp: {})",
-                        vertex.id(), nodeUniqueId, currentTimestamp);
-            }
-
-            // 4. Filter if status attribute is missing
+            // 3. Filter if status attribute is missing
             if (!hasStatusAttribute(event)) {
                 logger.debug("Dropping event for node {} as it lacks 'status' attribute.", vertex.id());
                 return;
             }
 
-            // 5. Buffer event for merging (instead of sending immediately)
-            if (nodeUniqueId != null && currentTimestamp != null) {
+            // 4. Extract lastUpdatedOn timestamp for deduplication
+            Instant currentTimestamp = getLastUpdatedOn(event);
+
+            // 5. Buffer event for merging (only if IL_UNIQUE_ID is present)
+            if (ilUniqueId != null && currentTimestamp != null) {
+                logger.info("Processing event for node {} with timestamp {}",
+                        ilUniqueId, currentTimestamp);
+
                 BufferedEvent bufferedEvent = new BufferedEvent(event, currentTimestamp);
-                eventBuffer.compute(nodeUniqueId, (k, v) -> {
+                eventBuffer.compute(ilUniqueId, (k, v) -> {
                     if (v == null) {
                         v = new CopyOnWriteArrayList<>();
                     }
                     v.add(bufferedEvent);
                     return v;
                 });
-                logger.debug("Buffered event for node {} with timestamp {}", nodeUniqueId, currentTimestamp);
+                logger.debug("Buffered event for node {} with timestamp {}", ilUniqueId, currentTimestamp);
             } else {
-                // If we can't extract timestamp, send immediately (fallback)
-                logger.warn("Cannot buffer event for node {}, sending immediately", vertex.id());
+                // If we can't extract IL_UNIQUE_ID or timestamp, send immediately (fallback)
+                logger.warn("Cannot buffer event for node {} (IL_UNIQUE_ID: {}, timestamp: {}), sending immediately",
+                        vertex.id(), ilUniqueId, currentTimestamp);
                 sendEventToSinks(vertex.id().toString(), event);
             }
 
