@@ -172,19 +172,64 @@ public class GraphLogProcessor {
             processedIds.add(vertex.id());
         }
 
-        // 3. Process Property Updates on Existing Vertices (UPDATE)
+        // 3 & 4. Process Property Updates AND Edge Changes (UPDATE)
         // JanusGraph registers property updates as REMOVED (old val) and ADDED (new
         // val) on the same vertex
+        // Edge changes are also associated with the vertex
         Set<JanusGraphVertex> changedVertices = changeState.getVertices(Change.ANY);
         for (JanusGraphVertex vertex : changedVertices) {
+            // If it's a new vertex, we already processed it as CREATE
+            if (changeState.getVertices(Change.ADDED).contains(vertex)) {
+                continue; // Already processed as CREATE
+            }
+            // If it's a removed vertex, we already processed it as DELETE
+            if (changeState.getVertices(Change.REMOVED).contains(vertex)) {
+                continue; // Already processed as DELETE
+            }
+
             if (!processedIds.contains(vertex.id())) {
-                // Determine if there are actual property diffs
+                // Determine if there are actual property diffs OR edge changes
                 Map<String, Map<String, Object>> propertyDiffs = getPropertyDiffs(vertex, changeState);
-                if (!propertyDiffs.isEmpty()) {
+                boolean hasEdgeChanges = hasEdgeChanges(vertex, changeState);
+
+                logger.info("Processing vertex {}: propertyDiffs.size={}, hasEdgeChanges={}", vertex.id(),
+                        propertyDiffs.size(), hasEdgeChanges);
+
+                if (!propertyDiffs.isEmpty() || hasEdgeChanges) {
                     processVertexChange(vertex, changeState, "UPDATE", txId, propertyDiffs);
+                } else {
+                    logger.info("Skipping vertex {} - no property or edge changes found.", vertex.id());
                 }
             }
         }
+    }
+
+    private boolean hasEdgeChanges(JanusGraphVertex vertex, ChangeState changeState) {
+        try {
+            if (changeState.getEdges(vertex, Change.ADDED, org.apache.tinkerpop.gremlin.structure.Direction.OUT)
+                    .iterator().hasNext()) {
+                logger.info("Vertex {} has ADDED OUT edges", vertex.id());
+                return true;
+            }
+            if (changeState.getEdges(vertex, Change.ADDED, org.apache.tinkerpop.gremlin.structure.Direction.IN)
+                    .iterator().hasNext()) {
+                logger.info("Vertex {} has ADDED IN edges", vertex.id());
+                return true;
+            }
+            if (changeState.getEdges(vertex, Change.REMOVED, org.apache.tinkerpop.gremlin.structure.Direction.OUT)
+                    .iterator().hasNext()) {
+                logger.info("Vertex {} has REMOVED OUT edges", vertex.id());
+                return true;
+            }
+            if (changeState.getEdges(vertex, Change.REMOVED, org.apache.tinkerpop.gremlin.structure.Direction.IN)
+                    .iterator().hasNext()) {
+                logger.info("Vertex {} has REMOVED IN edges", vertex.id());
+                return true;
+            }
+        } catch (Exception e) {
+            logger.error("Error checking edge changes for vertex {}", vertex.id(), e);
+        }
+        return false;
     }
 
     private Map<String, Map<String, Object>> getPropertyDiffs(JanusGraphVertex vertex, ChangeState changeState) {
@@ -234,6 +279,11 @@ public class GraphLogProcessor {
             // full snapshots.
             Map<String, Object> event = converter.convert(vertex, changeState, operationType, txId);
 
+            if (event == null) {
+                logger.debug("Event filtered by converter for node {}", vertex.id());
+                return;
+            }
+
             // 3. Check for event ordering (ignore older events)
             if (!shouldProcessEvent(event)) {
                 logger.info("Dropping older event for node {}", vertex.id());
@@ -261,7 +311,7 @@ public class GraphLogProcessor {
                     logger.error("Error sending event to sink: {}", sink.getClass().getSimpleName(), e);
                 }
             }
-            logger.debug("Sent event: {}", json);
+            logger.info("Sent event: {}", json);
         } catch (Exception e) {
             logger.error("Error serializing event", e);
         }

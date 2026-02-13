@@ -5,6 +5,9 @@ import org.janusgraph.core.JanusGraphVertexProperty;
 import org.janusgraph.core.log.Change;
 import org.janusgraph.core.log.ChangeState;
 import org.janusgraph.core.log.TransactionId;
+import org.apache.tinkerpop.gremlin.structure.Direction;
+import org.apache.tinkerpop.gremlin.structure.Edge;
+import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,6 +28,15 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
 
     // Fields that should remain as JSON strings (loaded from config)
     private static final Set<String> STRING_ONLY_FIELDS = new HashSet<>();
+
+    // Fields that must be included in the event if present on the vertex, even if
+    // not changed
+    private static final Set<String> REQUIRED_FIELDS = new HashSet<>(Arrays.asList(
+            "IL_UNIQUE_ID", "IL_FUNC_OBJECT_TYPE", "IL_SYS_NODE_TYPE", "status", "pkgVersion",
+            "lastUpdatedOn", "createdOn", "channel",
+            "name", "lemma", "title", "gloss", // For label
+            "lastUpdatedBy", "createdBy" // For userId
+    ));
 
     static {
         // Load configuration from cdc-converter.conf
@@ -73,6 +85,8 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         // Transaction Data
         Map<String, Object> transactionData = new HashMap<>();
         Map<String, Object> propertiesMap = new HashMap<>();
+        List<Map<String, Object>> addedRelations = new ArrayList<>();
+        List<Map<String, Object>> removedRelations = new ArrayList<>();
 
         // Populate Properties (nv/ov)
         // For CREATE: ov is null, nv is value
@@ -131,17 +145,51 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
                 logger.warn("Error processing removed properties for vertex {}", vertex.id(), e);
             }
 
-            // 3. Add ALL current vertex properties (complete snapshot)
-            // This ensures every UPDATE event has the complete current state
-            vertex.properties().forEachRemaining(p -> {
-                String key = p.key();
-                if (!processedKeys.contains(key)) {
-                    Map<String, Object> valMap = new HashMap<>();
-                    valMap.put("nv", processValue(key, p.value()));
-                    valMap.put("ov", null); // Unchanged property
-                    propertiesMap.put(key, valMap);
-                }
-            });
+            // 3. Add REQUIRED current vertex properties (partial snapshot)
+            // This ensures uniqueness and identity fields are always present
+            try {
+                vertex.properties().forEachRemaining(p -> {
+                    String key = p.key();
+                    if (REQUIRED_FIELDS.contains(key) && !processedKeys.contains(key)) {
+                        Map<String, Object> valMap = new HashMap<>();
+                        valMap.put("nv", processValue(key, p.value()));
+                        valMap.put("ov", null); // Unchanged property
+                        propertiesMap.put(key, valMap);
+                    }
+                });
+            } catch (Exception e) {
+                logger.warn("Error processing required properties for vertex {}", vertex.id(), e);
+            }
+
+            // 4. Added Relations
+            try {
+                // OUT Edges
+                changeState.getEdges(vertex, Change.ADDED, Direction.OUT).iterator().forEachRemaining(edge -> {
+                    addedRelations.add(processRelation(edge, Direction.OUT));
+                });
+
+                // IN Edges
+                changeState.getEdges(vertex, Change.ADDED, Direction.IN).iterator().forEachRemaining(edge -> {
+                    addedRelations.add(processRelation(edge, Direction.IN));
+                });
+            } catch (Exception e) {
+                logger.warn("Error processing added relations for vertex {}", vertex.id(), e);
+            }
+
+            // 5. Removed Relations
+            try {
+                // OUT Edges
+                changeState.getEdges(vertex, Change.REMOVED, Direction.OUT).iterator().forEachRemaining(edge -> {
+                    removedRelations.add(processRelation(edge, Direction.OUT));
+                });
+
+                // IN Edges
+                changeState.getEdges(vertex, Change.REMOVED, Direction.IN).iterator().forEachRemaining(edge -> {
+                    removedRelations.add(processRelation(edge, Direction.IN));
+                });
+            } catch (Exception e) {
+                logger.warn("Error processing removed relations for vertex {}", vertex.id(), e);
+            }
         } else if ("DELETE".equals(operationType)) {
             // In DELETE, changeState might provide REMOVED properties, or we access what we
             // can
@@ -172,8 +220,9 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         // Placeholder for Relations/Tags as per legacy format (empty for now)
         transactionData.put("addedTags", new ArrayList<>());
         transactionData.put("removedTags", new ArrayList<>());
-        transactionData.put("addedRelations", new ArrayList<>());
-        transactionData.put("removedRelations", new ArrayList<>());
+        // Populate Relations
+        transactionData.put("addedRelations", addedRelations);
+        transactionData.put("removedRelations", removedRelations);
 
         map.put("transactionData", transactionData);
 
@@ -198,7 +247,80 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         // User ID
         map.put("userId", getUserId(flatProps));
 
+        // Filter unnecessary events for ROOT node
+        // Only if there are NO added/removed relations
+        if ("root".equalsIgnoreCase(String.valueOf(map.get("nodeUniqueId"))) ||
+                "ROOT".equalsIgnoreCase(String.valueOf(map.get("objectType")))) {
+
+            boolean hasAdded = !addedRelations.isEmpty();
+            boolean hasRemoved = !removedRelations.isEmpty();
+
+            if (!hasAdded && !hasRemoved) {
+                return null;
+            }
+        }
+
         return map;
+    }
+
+    private Map<String, Object> processRelation(Edge edge, Direction direction) {
+        Map<String, Object> relation = new HashMap<>();
+        try {
+            Vertex otherVertex = (direction == Direction.OUT) ? edge.inVertex() : edge.outVertex();
+
+            relation.put("dir", direction.name());
+            relation.put("rel", edge.label());
+
+            // Fetch properties of the other vertex
+            // We need to iterate properties to find ID, Label, Type
+            // Note: JanusGraph might require property access
+
+            String id = null;
+            String type = null;
+            String label = null;
+
+            try {
+                // Try to get IL_UNIQUE_ID
+                // For vertices in a transaction, we can access properties
+                Iterator<org.apache.tinkerpop.gremlin.structure.VertexProperty<Object>> props = otherVertex
+                        .properties("IL_UNIQUE_ID", "IL_FUNC_OBJECT_TYPE", "name", "title", "lemma", "gloss");
+                while (props.hasNext()) {
+                    org.apache.tinkerpop.gremlin.structure.VertexProperty<Object> p = props.next();
+                    if ("IL_UNIQUE_ID".equals(p.key()))
+                        id = (String) p.value();
+                    if ("IL_FUNC_OBJECT_TYPE".equals(p.key()))
+                        type = (String) p.value();
+                    if (label == null && ("name".equals(p.key()) || "title".equals(p.key()) || "lemma".equals(p.key())
+                            || "gloss".equals(p.key()))) {
+                        label = (String) p.value();
+                    }
+                }
+            } catch (Exception e) {
+                logger.warn("Error fetching properties for relation vertex {}", otherVertex.id(), e);
+            }
+
+            if (id == null)
+                id = otherVertex.id().toString(); // Fallback to graph ID
+            if (type == null)
+                type = otherVertex.label(); // Fallback to vertex label
+            if (label == null)
+                label = otherVertex.label(); // Fallback
+
+            relation.put("id", id);
+            relation.put("type", type);
+            relation.put("label", label);
+
+            // Extract edge metadata
+            Map<String, Object> relMetadata = new HashMap<>();
+            edge.properties().forEachRemaining(p -> {
+                relMetadata.put(p.key(), p.value());
+            });
+            relation.put("relMetadata", relMetadata);
+
+        } catch (Exception e) {
+            logger.warn("Error processing relation", e);
+        }
+        return relation;
     }
 
     private Map<String, Object> flattenProperties(Map<String, Object> propertiesMap) {
