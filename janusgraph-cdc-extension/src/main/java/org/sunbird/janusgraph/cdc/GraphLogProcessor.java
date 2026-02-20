@@ -4,9 +4,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.janusgraph.core.JanusGraph;
 import org.janusgraph.core.JanusGraphFactory;
+import org.janusgraph.core.JanusGraphRelation;
 import org.janusgraph.core.JanusGraphTransaction;
 import org.janusgraph.core.JanusGraphVertex;
-import org.janusgraph.core.JanusGraphVertexProperty;
 import org.janusgraph.core.log.Change;
 import org.janusgraph.core.log.ChangeProcessor;
 import org.janusgraph.core.log.ChangeState;
@@ -40,16 +40,6 @@ public class GraphLogProcessor {
     private boolean isStarted = false;
 
     // Event buffering removed
-
-    // Cache for Event Ordering (LRU)
-    private static final int CACHE_SIZE = 10000;
-    private final Map<String, Long> lastUpdatedCache = Collections
-            .synchronizedMap(new LinkedHashMap<String, Long>(CACHE_SIZE + 1, .75F, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
-                    return size() > CACHE_SIZE;
-                }
-            });
 
     private GraphLogProcessor() {
         // Prevent direct instantiation
@@ -152,7 +142,6 @@ public class GraphLogProcessor {
             }
         }
         sinks.clear();
-        lastUpdatedCache.clear();
         isStarted = false;
         logger.info("GraphLogProcessor stopped.");
     }
@@ -162,115 +151,61 @@ public class GraphLogProcessor {
 
         // 1. Process Added Vertices (CREATE)
         for (JanusGraphVertex vertex : changeState.getVertices(Change.ADDED)) {
-            processVertexChange(vertex, changeState, "CREATE", txId, null);
+            processVertexChange(vertex, changeState, "CREATE", txId);
             processedIds.add(vertex.id());
         }
 
         // 2. Process Removed Vertices (DELETE)
         for (JanusGraphVertex vertex : changeState.getVertices(Change.REMOVED)) {
-            processVertexChange(vertex, changeState, "DELETE", txId, null);
+            processVertexChange(vertex, changeState, "DELETE", txId);
             processedIds.add(vertex.id());
         }
 
         // 3 & 4. Process Property Updates AND Edge Changes (UPDATE)
-        // JanusGraph registers property updates as REMOVED (old val) and ADDED (new
-        // val) on the same vertex
-        // Edge changes are also associated with the vertex
+        // getVertices(Change.ANY) returns the union of ADDED/REMOVED vertices
+        // plus endpoint vertices extracted from all changed relations (edges).
+        // This ensures edge-only changes are also discovered.
         Set<JanusGraphVertex> changedVertices = changeState.getVertices(Change.ANY);
+
+        // Count all relations in this ChangeState (edges + properties combined)
+        int addedRelCount = 0;
+        int removedRelCount = 0;
+        for (JanusGraphRelation r : changeState.getRelations(Change.ADDED)) {
+            addedRelCount++;
+            if (r.isEdge()) {
+                logger.info("  ADDED relation (edge): type={}, vertices={}", r.getType().name(), r);
+            }
+        }
+        for (JanusGraphRelation r : changeState.getRelations(Change.REMOVED)) {
+            removedRelCount++;
+            if (r.isEdge()) {
+                logger.info("  REMOVED relation (edge): type={}, vertices={}", r.getType().name(), r);
+            }
+        }
+        logger.info("ChangeState — vertices ADDED: {}, REMOVED: {}, ANY: {} | relations ADDED: {}, REMOVED: {}",
+                changeState.getVertices(Change.ADDED).size(),
+                changeState.getVertices(Change.REMOVED).size(),
+                changedVertices.size(),
+                addedRelCount, removedRelCount);
         for (JanusGraphVertex vertex : changedVertices) {
             // If it's a new vertex, we already processed it as CREATE
             if (changeState.getVertices(Change.ADDED).contains(vertex)) {
-                continue; // Already processed as CREATE
+                continue;
             }
             // If it's a removed vertex, we already processed it as DELETE
             if (changeState.getVertices(Change.REMOVED).contains(vertex)) {
-                continue; // Already processed as DELETE
+                continue;
             }
 
             if (!processedIds.contains(vertex.id())) {
-                // Determine if there are actual property diffs OR edge changes
-                Map<String, Map<String, Object>> propertyDiffs = getPropertyDiffs(vertex, changeState);
-                boolean hasEdgeChanges = hasEdgeChanges(vertex, changeState);
-
-                logger.info("Processing vertex {}: propertyDiffs.size={}, hasEdgeChanges={}", vertex.id(),
-                        propertyDiffs.size(), hasEdgeChanges);
-
-                if (!propertyDiffs.isEmpty() || hasEdgeChanges) {
-                    processVertexChange(vertex, changeState, "UPDATE", txId, propertyDiffs);
-                } else {
-                    logger.info("Skipping vertex {} - no property or edge changes found.", vertex.id());
-                }
+                logger.info("Processing vertex {} as UPDATE", vertex.id());
+                processVertexChange(vertex, changeState, "UPDATE", txId);
             }
         }
-    }
-
-    private boolean hasEdgeChanges(JanusGraphVertex vertex, ChangeState changeState) {
-        try {
-            if (changeState.getEdges(vertex, Change.ADDED, org.apache.tinkerpop.gremlin.structure.Direction.OUT)
-                    .iterator().hasNext()) {
-                logger.info("Vertex {} has ADDED OUT edges", vertex.id());
-                return true;
-            }
-            if (changeState.getEdges(vertex, Change.ADDED, org.apache.tinkerpop.gremlin.structure.Direction.IN)
-                    .iterator().hasNext()) {
-                logger.info("Vertex {} has ADDED IN edges", vertex.id());
-                return true;
-            }
-            if (changeState.getEdges(vertex, Change.REMOVED, org.apache.tinkerpop.gremlin.structure.Direction.OUT)
-                    .iterator().hasNext()) {
-                logger.info("Vertex {} has REMOVED OUT edges", vertex.id());
-                return true;
-            }
-            if (changeState.getEdges(vertex, Change.REMOVED, org.apache.tinkerpop.gremlin.structure.Direction.IN)
-                    .iterator().hasNext()) {
-                logger.info("Vertex {} has REMOVED IN edges", vertex.id());
-                return true;
-            }
-        } catch (Exception e) {
-            logger.error("Error checking edge changes for vertex {}", vertex.id(), e);
-        }
-        return false;
-    }
-
-    private Map<String, Map<String, Object>> getPropertyDiffs(JanusGraphVertex vertex, ChangeState changeState) {
-        Map<String, Map<String, Object>> diffs = new HashMap<>();
-
-        // Capture Removed Properties (Old Values)
-        // usage: getProperties(vertex, change, keys...) - empty keys means all
-        Iterator<JanusGraphVertexProperty> removedProps = changeState
-                .getProperties(vertex, Change.REMOVED).iterator();
-        while (removedProps.hasNext()) {
-            JanusGraphVertexProperty p = removedProps.next();
-            String key = p.key();
-            // Filter system properties if needed
-            if (!isSystemProperty(key)) {
-                diffs.putIfAbsent(key, new HashMap<>());
-                diffs.get(key).put("ov", p.value());
-            }
-        }
-
-        // Capture Added Properties (New Values)
-        Iterator<JanusGraphVertexProperty> addedProps = changeState.getProperties(vertex, Change.ADDED)
-                .iterator();
-        while (addedProps.hasNext()) {
-            JanusGraphVertexProperty p = addedProps.next();
-            String key = p.key();
-            if (!isSystemProperty(key)) {
-                diffs.putIfAbsent(key, new HashMap<>());
-                diffs.get(key).put("nv", p.value());
-            }
-        }
-
-        return diffs;
-    }
-
-    private boolean isSystemProperty(String key) {
-        // Add any system property filters here
-        return false;
     }
 
     private void processVertexChange(JanusGraphVertex vertex, ChangeState changeState, String operationType,
-            TransactionId txId, Map<String, Map<String, Object>> propertyDiffs) {
+            TransactionId txId) {
         try {
 
             // 2. Convert message using the Strategy Pattern
@@ -281,12 +216,6 @@ public class GraphLogProcessor {
 
             if (event == null) {
                 logger.debug("Event filtered by converter for node {}", vertex.id());
-                return;
-            }
-
-            // 3. Check for event ordering (ignore older events)
-            if (!shouldProcessEvent(event)) {
-                logger.info("Dropping older event for node {}", vertex.id());
                 return;
             }
 
@@ -335,35 +264,6 @@ public class GraphLogProcessor {
             // ignore
         }
         return false;
-    }
-
-    private boolean shouldProcessEvent(Map<String, Object> event) {
-        try {
-            String nodeUniqueId = getNodeUniqueId(event);
-            Long currentLastUpdatedOn = getLastUpdatedOn(event);
-
-            if (nodeUniqueId == null || currentLastUpdatedOn == null) {
-                // If we can't determine id or timestamp, process it by default to be safe
-                return true;
-            }
-
-            Long cachedLastUpdatedOn = lastUpdatedCache.get(nodeUniqueId);
-            if (cachedLastUpdatedOn != null) {
-                if (currentLastUpdatedOn <= cachedLastUpdatedOn) {
-                    logger.info("Ignoring event for node {}. Last processed: {}, Current: {}",
-                            nodeUniqueId, cachedLastUpdatedOn, currentLastUpdatedOn);
-                    return false;
-                }
-            }
-
-            // Update cache
-            lastUpdatedCache.put(nodeUniqueId, currentLastUpdatedOn);
-            return true;
-
-        } catch (Exception e) {
-            logger.error("Error checking event ordering", e);
-            return true; // fail safe
-        }
     }
 
     private String getNodeUniqueId(Map<String, Object> event) {

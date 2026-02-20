@@ -1,7 +1,6 @@
 package org.sunbird.janusgraph.cdc;
 
 import org.janusgraph.core.JanusGraphVertex;
-import org.janusgraph.core.JanusGraphVertexProperty;
 import org.janusgraph.core.log.Change;
 import org.janusgraph.core.log.ChangeState;
 import org.janusgraph.core.log.TransactionId;
@@ -28,15 +27,6 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
 
     // Fields that should remain as JSON strings (loaded from config)
     private static final Set<String> STRING_ONLY_FIELDS = new HashSet<>();
-
-    // Fields that must be included in the event if present on the vertex, even if
-    // not changed
-    private static final Set<String> REQUIRED_FIELDS = new HashSet<>(Arrays.asList(
-            "IL_UNIQUE_ID", "IL_FUNC_OBJECT_TYPE", "IL_SYS_NODE_TYPE", "status", "pkgVersion",
-            "lastUpdatedOn", "createdOn", "channel",
-            "name", "lemma", "title", "gloss", // For label
-            "lastUpdatedBy", "createdBy" // For userId
-    ));
 
     static {
         // Load configuration from cdc-converter.conf
@@ -84,134 +74,27 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
 
         // Transaction Data
         Map<String, Object> transactionData = new HashMap<>();
-        Map<String, Object> propertiesMap = new HashMap<>();
         List<Map<String, Object>> addedRelations = new ArrayList<>();
         List<Map<String, Object>> removedRelations = new ArrayList<>();
 
-        // Populate Properties (nv/ov)
-        // For CREATE: ov is null, nv is value
-        // For DELETE: ov is confirmed value, nv is null
-        // For UPDATE: logic required to find diff
+        // Build property change map (ov/nv entries)
+        Map<String, Object> propertiesMap;
 
-        if ("CREATE".equals(operationType)) {
-            vertex.properties().forEachRemaining(p -> {
-                Map<String, Object> valMap = new HashMap<>();
-                valMap.put("ov", null);
-                valMap.put("nv", processValue(p.key(), p.value()));
-                propertiesMap.put(p.key(), valMap);
-            });
-        } else if ("UPDATE".equals(operationType)) {
-            Set<String> processedKeys = new HashSet<>();
+        if ("UPDATE".equals(operationType)) {
+            // For UPDATE: build diffs from ChangeState and track actual changes.
+            // ChangeState iterables may be single-use, so this MUST be the first
+            // (and only) time they are consumed.
+            Set<String> changedKeys = new HashSet<>();
+            propertiesMap = buildUpdateProperties(vertex, changeState, changedKeys);
+            collectRelationChanges(vertex, changeState, addedRelations, removedRelations);
 
-            // 1. Process ADDED properties (new or updated values)
-            try {
-                changeState.getProperties(vertex, Change.ADDED).iterator().forEachRemaining(p -> {
-                    String key = p.key();
-                    processedKeys.add(key);
-                    Map<String, Object> valMap = new HashMap<>();
-                    valMap.put("nv", processValue(key, p.value()));
-
-                    Object ov = null;
-                    try {
-                        // Fetch the removed property with the same key which represents the old value
-                        Iterator<JanusGraphVertexProperty> removedProps = changeState
-                                .getProperties(vertex, Change.REMOVED, key).iterator();
-                        if (removedProps.hasNext()) {
-                            ov = processValue(key, removedProps.next().value());
-                        }
-                    } catch (Exception e) {
-                        // ignore
-                    }
-                    valMap.put("ov", ov);
-                    propertiesMap.put(key, valMap);
-                });
-            } catch (Exception e) {
-                logger.warn("Error processing added properties for vertex {}", vertex.id(), e);
+            // If there are no actual property or relation changes, skip this event
+            if (changedKeys.isEmpty() && addedRelations.isEmpty() && removedRelations.isEmpty()) {
+                logger.debug("No actual changes detected for vertex {}, skipping UPDATE event", vertex.id());
+                return null;
             }
-
-            // 2. Process REMOVED properties (deleted properties not in ADDED)
-            try {
-                changeState.getProperties(vertex, Change.REMOVED).iterator().forEachRemaining(p -> {
-                    String key = p.key();
-                    if (!processedKeys.contains(key)) {
-                        processedKeys.add(key); // Mark as processed to avoid overwrite
-                        Map<String, Object> valMap = new HashMap<>();
-                        valMap.put("ov", processValue(key, p.value()));
-                        valMap.put("nv", null);
-                        propertiesMap.put(key, valMap);
-                    }
-                });
-            } catch (Exception e) {
-                logger.warn("Error processing removed properties for vertex {}", vertex.id(), e);
-            }
-
-            // 3. Add REQUIRED current vertex properties (partial snapshot)
-            // This ensures uniqueness and identity fields are always present
-            try {
-                vertex.properties().forEachRemaining(p -> {
-                    String key = p.key();
-                    if (REQUIRED_FIELDS.contains(key) && !processedKeys.contains(key)) {
-                        Map<String, Object> valMap = new HashMap<>();
-                        valMap.put("nv", processValue(key, p.value()));
-                        valMap.put("ov", null); // Unchanged property
-                        propertiesMap.put(key, valMap);
-                    }
-                });
-            } catch (Exception e) {
-                logger.warn("Error processing required properties for vertex {}", vertex.id(), e);
-            }
-
-            // 4. Added Relations
-            try {
-                // OUT Edges
-                changeState.getEdges(vertex, Change.ADDED, Direction.OUT).iterator().forEachRemaining(edge -> {
-                    addedRelations.add(processRelation(edge, Direction.OUT));
-                });
-
-                // IN Edges
-                changeState.getEdges(vertex, Change.ADDED, Direction.IN).iterator().forEachRemaining(edge -> {
-                    addedRelations.add(processRelation(edge, Direction.IN));
-                });
-            } catch (Exception e) {
-                logger.warn("Error processing added relations for vertex {}", vertex.id(), e);
-            }
-
-            // 5. Removed Relations
-            try {
-                // OUT Edges
-                changeState.getEdges(vertex, Change.REMOVED, Direction.OUT).iterator().forEachRemaining(edge -> {
-                    removedRelations.add(processRelation(edge, Direction.OUT));
-                });
-
-                // IN Edges
-                changeState.getEdges(vertex, Change.REMOVED, Direction.IN).iterator().forEachRemaining(edge -> {
-                    removedRelations.add(processRelation(edge, Direction.IN));
-                });
-            } catch (Exception e) {
-                logger.warn("Error processing removed relations for vertex {}", vertex.id(), e);
-            }
-        } else if ("DELETE".equals(operationType)) {
-            // In DELETE, changeState might provide REMOVED properties, or we access what we
-            // can
-            // Note: Vertex might be empty if already removed, but ChangeState should have
-            // it.
-            // However, for DELETE, we rely on what's available.
-            // The passed 'vertex' is from getVertices(Change.REMOVED).
-            // We can check removed properties if needed, or assume current state is 'ov'.
-            // JanusGraph might not provide properties on a removed vertex handle easily.
-            // We'll attempt to iterate properties if they exist in memory trace.
-
-            // Strategy: Iterate properties if available. if not, we can't emit much.
-            try {
-                vertex.properties().forEachRemaining(p -> {
-                    Map<String, Object> valMap = new HashMap<>();
-                    valMap.put("ov", processValue(p.key(), p.value()));
-                    valMap.put("nv", null);
-                    propertiesMap.put(p.key(), valMap);
-                });
-            } catch (Exception e) {
-                logger.warn("Could not read properties for deleted vertex {}", vertex.id());
-            }
+        } else {
+            propertiesMap = buildPropertyChanges(vertex, changeState, operationType);
         }
 
         // Add properties to transactionData
@@ -226,26 +109,14 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
 
         map.put("transactionData", transactionData);
 
-        // Derived Fields from props
-        Map<String, Object> flatProps = flattenProperties(propertiesMap);
-
-        map.put("createdOn", DATE_FORMATTER.format(Instant.now())); // Current time as we process
-        map.put("channel", flatProps.getOrDefault("channel", "all"));
-
-        // Label logic
-        map.put("label", getLabel(vertex, flatProps));
-
-        // Node Type
-        map.put("nodeType", flatProps.getOrDefault("IL_SYS_NODE_TYPE", "DATA_NODE"));
-
-        // Object Type
-        map.put("objectType", flatProps.getOrDefault("IL_FUNC_OBJECT_TYPE", vertex.label()));
-
-        // Unique ID
-        map.put("nodeUniqueId", flatProps.getOrDefault("IL_UNIQUE_ID", vertex.id().toString()));
-
-        // User ID
-        map.put("userId", getUserId(flatProps));
+        // Derived Fields — read from vertex directly so properties only contains actual changes
+        map.put("createdOn", DATE_FORMATTER.format(Instant.now()));
+        map.put("channel", getVertexProperty(vertex, "channel", "all"));
+        map.put("label", getLabel(vertex));
+        map.put("nodeType", getVertexProperty(vertex, "IL_SYS_NODE_TYPE", "DATA_NODE"));
+        map.put("objectType", getVertexProperty(vertex, "IL_FUNC_OBJECT_TYPE", vertex.label()));
+        map.put("nodeUniqueId", getVertexProperty(vertex, "IL_UNIQUE_ID", vertex.id().toString()));
+        map.put("userId", getUserId(vertex));
 
         // Filter unnecessary events for ROOT node
         // Only if there are NO added/removed relations
@@ -323,39 +194,153 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         return relation;
     }
 
-    private Map<String, Object> flattenProperties(Map<String, Object> propertiesMap) {
-        Map<String, Object> flat = new HashMap<>();
-        for (Map.Entry<String, Object> entry : propertiesMap.entrySet()) {
-            Map<String, Object> valMap = (Map<String, Object>) entry.getValue();
-            // multiple logic: prefer nv, else ov
-            Object val = valMap.get("nv");
-            if (val == null)
-                val = valMap.get("ov");
-            if (val != null)
-                flat.put(entry.getKey(), val);
+    /**
+     * Reads a single property value from the vertex, returning a default if not found.
+     */
+    private String getVertexProperty(JanusGraphVertex vertex, String key, String defaultValue) {
+        try {
+            Iterator<org.apache.tinkerpop.gremlin.structure.VertexProperty<Object>> it = vertex.properties(key);
+            if (it.hasNext()) {
+                Object val = it.next().value();
+                return val != null ? val.toString() : defaultValue;
+            }
+        } catch (Exception e) {
+            logger.warn("Error reading property '{}' from vertex {}", key, vertex.id(), e);
         }
-        return flat;
+        return defaultValue;
     }
 
-    private String getLabel(JanusGraphVertex vertex, Map<String, Object> props) {
+    private String getLabel(JanusGraphVertex vertex) {
         // Legacy: name -> lemma -> title -> gloss
-        if (props.containsKey("name"))
-            return (String) props.get("name");
-        if (props.containsKey("lemma"))
-            return (String) props.get("lemma");
-        if (props.containsKey("title"))
-            return (String) props.get("title");
-        if (props.containsKey("gloss"))
-            return (String) props.get("gloss");
+        for (String key : new String[]{"name", "lemma", "title", "gloss"}) {
+            String val = getVertexProperty(vertex, key, null);
+            if (val != null) return val;
+        }
         return vertex.label();
     }
 
-    private String getUserId(Map<String, Object> props) {
-        if (props.containsKey("lastUpdatedBy"))
-            return (String) props.get("lastUpdatedBy");
-        if (props.containsKey("createdBy"))
-            return (String) props.get("createdBy");
+    private String getUserId(JanusGraphVertex vertex) {
+        String val = getVertexProperty(vertex, "lastUpdatedBy", null);
+        if (val != null) return val;
+        val = getVertexProperty(vertex, "createdBy", null);
+        if (val != null) return val;
         return "ANONYMOUS";
+    }
+
+    // --- Refactored property change helpers ---
+
+    /**
+     * Creates a single {ov, nv} property entry.
+     */
+    private Map<String, Object> createPropertyEntry(Object ov, Object nv) {
+        Map<String, Object> entry = new HashMap<>();
+        entry.put("ov", ov);
+        entry.put("nv", nv);
+        return entry;
+    }
+
+    /**
+     * Builds the property change map for CREATE and DELETE operations.
+     * For CREATE: ov=null, nv=current value.
+     * For DELETE: ov=current value, nv=null.
+     */
+    private Map<String, Object> buildPropertyChanges(JanusGraphVertex vertex, ChangeState changeState,
+            String operationType) {
+        Map<String, Object> propertiesMap = new LinkedHashMap<>();
+
+        switch (operationType) {
+            case "CREATE":
+                buildCreateProperties(vertex, propertiesMap);
+                break;
+            case "DELETE":
+                buildDeleteProperties(vertex, propertiesMap);
+                break;
+            default:
+                logger.warn("Unknown operationType: {}", operationType);
+        }
+        return propertiesMap;
+    }
+
+    private void buildCreateProperties(JanusGraphVertex vertex, Map<String, Object> propertiesMap) {
+        try {
+            vertex.properties().forEachRemaining(p ->
+                    propertiesMap.put(p.key(), createPropertyEntry(null, processValue(p.key(), p.value()))));
+        } catch (Exception e) {
+            logger.warn("Error reading properties for created vertex {}", vertex.id(), e);
+        }
+    }
+
+    /**
+     * Builds property changes for UPDATE operations.
+     * Only includes properties that actually changed (from ChangeState ADDED/REMOVED).
+     * Populates changedKeys with keys that had actual changes.
+     *
+     * @param changedKeys populated with keys that had actual ADDED/REMOVED changes
+     * @return the properties map with {ov, nv} entries
+     */
+    private Map<String, Object> buildUpdateProperties(JanusGraphVertex vertex, ChangeState changeState,
+            Set<String> changedKeys) {
+        Map<String, Object> propertiesMap = new LinkedHashMap<>();
+
+        // 1. Collect all REMOVED (old) values into a lookup map
+        //    Note: JanusGraph's user transaction log may NOT provide REMOVED for SINGLE
+        //    cardinality property updates — in that case ov will be null.
+        Map<String, Object> oldValues = new LinkedHashMap<>();
+        try {
+            changeState.getProperties(vertex, Change.REMOVED).iterator().forEachRemaining(p ->
+                    oldValues.put(p.key(), processValue(p.key(), p.value())));
+        } catch (Exception e) {
+            logger.warn("Error collecting removed properties for vertex {}", vertex.id(), e);
+        }
+
+        // 2. Process ADDED properties (new values), pairing with old values
+        try {
+            changeState.getProperties(vertex, Change.ADDED).iterator().forEachRemaining(p -> {
+                String key = p.key();
+                changedKeys.add(key);
+                Object nv = processValue(key, p.value());
+                Object ov = oldValues.remove(key);
+                propertiesMap.put(key, createPropertyEntry(ov, nv));
+            });
+        } catch (Exception e) {
+            logger.warn("Error processing added properties for vertex {}", vertex.id(), e);
+        }
+
+        // 3. Remaining old values = properties that were deleted (REMOVED but not re-ADDED)
+        oldValues.forEach((key, ov) -> {
+            changedKeys.add(key);
+            propertiesMap.put(key, createPropertyEntry(ov, null));
+        });
+
+        return propertiesMap;
+    }
+
+    private void buildDeleteProperties(JanusGraphVertex vertex, Map<String, Object> propertiesMap) {
+        try {
+            vertex.properties().forEachRemaining(p ->
+                    propertiesMap.put(p.key(), createPropertyEntry(processValue(p.key(), p.value()), null)));
+        } catch (Exception e) {
+            logger.warn("Could not read properties for deleted vertex {}", vertex.id(), e);
+        }
+    }
+
+    /**
+     * Collects added/removed edge (relation) changes for a vertex.
+     */
+    private void collectRelationChanges(JanusGraphVertex vertex, ChangeState changeState,
+            List<Map<String, Object>> addedRelations, List<Map<String, Object>> removedRelations) {
+        try {
+            for (Direction dir : new Direction[]{Direction.OUT, Direction.IN}) {
+                changeState.getEdges(vertex, Change.ADDED, dir).iterator().forEachRemaining(edge ->
+                        addedRelations.add(processRelation(edge, dir)));
+                changeState.getEdges(vertex, Change.REMOVED, dir).iterator().forEachRemaining(edge ->
+                        removedRelations.add(processRelation(edge, dir)));
+            }
+            logger.info("Vertex {} relation changes — added: {}, removed: {}",
+                    vertex.id(), addedRelations.size(), removedRelations.size());
+        } catch (Exception e) {
+            logger.warn("Error processing relation changes for vertex {}", vertex.id(), e);
+        }
     }
 
     /**
