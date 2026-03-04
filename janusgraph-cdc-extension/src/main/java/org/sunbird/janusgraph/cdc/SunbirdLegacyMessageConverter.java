@@ -114,7 +114,15 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         map.put("channel", getVertexProperty(vertex, "channel", "all"));
         map.put("label", getLabel(vertex));
         map.put("nodeType", getVertexProperty(vertex, "IL_SYS_NODE_TYPE", "DATA_NODE"));
-        map.put("objectType", getVertexProperty(vertex, "IL_FUNC_OBJECT_TYPE", vertex.label()));
+        String objectType = getVertexProperty(vertex, "IL_FUNC_OBJECT_TYPE", vertex.label());
+        // Filter out internal JanusGraph vertices that have no IL_FUNC_OBJECT_TYPE set
+        // (their label falls back to TinkerPop's default "vertex")
+        if ("vertex".equalsIgnoreCase(objectType)) {
+            logger.debug("Skipping event for vertex {} with objectType='vertex' (no IL_FUNC_OBJECT_TYPE set)",
+                    vertex.id());
+            return null;
+        }
+        map.put("objectType", objectType);
         map.put("nodeUniqueId", getVertexProperty(vertex, "IL_UNIQUE_ID", vertex.id().toString()));
         map.put("userId", getUserId(vertex));
 
