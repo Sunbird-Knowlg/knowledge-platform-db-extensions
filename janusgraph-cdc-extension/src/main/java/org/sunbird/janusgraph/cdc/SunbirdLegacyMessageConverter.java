@@ -78,6 +78,9 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         List<Map<String, Object>> removedRelations = new ArrayList<>();
 
         // Build property change map (ov/nv entries)
+        // For DELETE: snapshot removed properties from ChangeState FIRST — the live
+        // vertex has already been removed and vertex.properties() returns nothing.
+        Map<String, Object> deletedProps = new HashMap<>();
         Map<String, Object> propertiesMap;
 
         if ("UPDATE".equals(operationType)) {
@@ -94,7 +97,10 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
                 return null;
             }
         } else {
-            propertiesMap = buildPropertyChanges(vertex, changeState, operationType);
+            if ("DELETE".equals(operationType)) {
+                deletedProps = buildRemovedSnapshot(vertex, changeState);
+            }
+            propertiesMap = buildPropertyChanges(vertex, changeState, operationType, deletedProps);
         }
 
         // Add properties to transactionData
@@ -109,12 +115,18 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
 
         map.put("transactionData", transactionData);
 
-        // Derived Fields — read from vertex directly so properties only contains actual changes
+        // Derived Fields — for DELETE read from the removed-property snapshot since
+        // the vertex is already gone; for CREATE/UPDATE read from the live vertex.
+        boolean isDelete = "DELETE".equals(operationType);
         map.put("createdOn", DATE_FORMATTER.format(Instant.now()));
-        map.put("channel", getVertexProperty(vertex, "channel", "all"));
-        map.put("label", getLabel(vertex));
-        map.put("nodeType", getVertexProperty(vertex, "IL_SYS_NODE_TYPE", "DATA_NODE"));
-        String objectType = getVertexProperty(vertex, "IL_FUNC_OBJECT_TYPE", vertex.label());
+        map.put("channel", isDelete ? getFromSnapshot(deletedProps, "channel", "all")
+                : getVertexProperty(vertex, "channel", "all"));
+        map.put("label", isDelete ? getLabelFromSnapshot(deletedProps, vertex)
+                : getLabel(vertex));
+        map.put("nodeType", isDelete ? getFromSnapshot(deletedProps, "IL_SYS_NODE_TYPE", "DATA_NODE")
+                : getVertexProperty(vertex, "IL_SYS_NODE_TYPE", "DATA_NODE"));
+        String objectType = isDelete ? getFromSnapshot(deletedProps, "IL_FUNC_OBJECT_TYPE", vertex.label())
+                : getVertexProperty(vertex, "IL_FUNC_OBJECT_TYPE", vertex.label());
         // Filter out internal JanusGraph vertices that have no IL_FUNC_OBJECT_TYPE set
         // (their label falls back to TinkerPop's default "vertex")
         if ("vertex".equalsIgnoreCase(objectType)) {
@@ -123,8 +135,9 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
             return null;
         }
         map.put("objectType", objectType);
-        map.put("nodeUniqueId", getVertexProperty(vertex, "IL_UNIQUE_ID", vertex.id().toString()));
-        map.put("userId", getUserId(vertex));
+        map.put("nodeUniqueId", isDelete ? getFromSnapshot(deletedProps, "IL_UNIQUE_ID", vertex.id().toString())
+                : getVertexProperty(vertex, "IL_UNIQUE_ID", vertex.id().toString()));
+        map.put("userId", isDelete ? getUserIdFromSnapshot(deletedProps, vertex) : getUserId(vertex));
 
         // Filter unnecessary events for ROOT node
         // Only if there are NO added/removed relations
@@ -235,6 +248,43 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         return "ANONYMOUS";
     }
 
+    /**
+     * Builds a snapshot of all properties that were removed as part of a DELETE
+     * transaction, using ChangeState. Must be called before vertex.properties()
+     * becomes unavailable (i.e., before buildPropertyChanges for DELETE).
+     */
+    private Map<String, Object> buildRemovedSnapshot(JanusGraphVertex vertex, ChangeState changeState) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        try {
+            changeState.getProperties(vertex, Change.REMOVED).iterator().forEachRemaining(p ->
+                    snapshot.put(p.key(), processValue(p.key(), p.value())));
+        } catch (Exception e) {
+            logger.warn("Could not read removed properties from ChangeState for vertex {}", vertex.id(), e);
+        }
+        return snapshot;
+    }
+
+    private String getFromSnapshot(Map<String, Object> snapshot, String key, String defaultValue) {
+        Object val = snapshot.get(key);
+        return val != null ? val.toString() : defaultValue;
+    }
+
+    private String getLabelFromSnapshot(Map<String, Object> snapshot, JanusGraphVertex vertex) {
+        for (String key : new String[]{"name", "lemma", "title", "gloss"}) {
+            Object val = snapshot.get(key);
+            if (val != null) return val.toString();
+        }
+        return vertex.label();
+    }
+
+    private String getUserIdFromSnapshot(Map<String, Object> snapshot, JanusGraphVertex vertex) {
+        Object val = snapshot.get("lastUpdatedBy");
+        if (val != null) return val.toString();
+        val = snapshot.get("createdBy");
+        if (val != null) return val.toString();
+        return "ANONYMOUS";
+    }
+
     // --- Refactored property change helpers ---
 
     /**
@@ -253,7 +303,7 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
      * For DELETE: ov=current value, nv=null.
      */
     private Map<String, Object> buildPropertyChanges(JanusGraphVertex vertex, ChangeState changeState,
-            String operationType) {
+            String operationType, Map<String, Object> deletedProps) {
         Map<String, Object> propertiesMap = new LinkedHashMap<>();
 
         switch (operationType) {
@@ -261,7 +311,7 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
                 buildCreateProperties(vertex, propertiesMap);
                 break;
             case "DELETE":
-                buildDeleteProperties(vertex, propertiesMap);
+                buildDeleteProperties(deletedProps, propertiesMap);
                 break;
             default:
                 logger.warn("Unknown operationType: {}", operationType);
@@ -323,13 +373,11 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         return propertiesMap;
     }
 
-    private void buildDeleteProperties(JanusGraphVertex vertex, Map<String, Object> propertiesMap) {
-        try {
-            vertex.properties().forEachRemaining(p ->
-                    propertiesMap.put(p.key(), createPropertyEntry(processValue(p.key(), p.value()), null)));
-        } catch (Exception e) {
-            logger.warn("Could not read properties for deleted vertex {}", vertex.id(), e);
-        }
+    private void buildDeleteProperties(Map<String, Object> deletedProps, Map<String, Object> propertiesMap) {
+        // deletedProps was built from changeState.getProperties(vertex, Change.REMOVED)
+        // before the vertex was removed, so it contains all pre-deletion property values.
+        deletedProps.forEach((key, value) ->
+                propertiesMap.put(key, createPropertyEntry(value, null)));
     }
 
     /**
