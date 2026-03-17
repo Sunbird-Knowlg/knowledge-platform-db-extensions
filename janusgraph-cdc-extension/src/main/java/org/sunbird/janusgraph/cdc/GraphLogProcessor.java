@@ -39,6 +39,10 @@ public class GraphLogProcessor {
     private MessageConverter converter;
     private boolean isStarted = false;
 
+    // Tracks the last-processed lastUpdatedOn (epoch ms) per nodeUniqueId
+    // to filter out-of-order/duplicate events.
+    private final Map<String, Long> lastUpdatedCache = new HashMap<>();
+
     // Event buffering removed
 
     private GraphLogProcessor() {
@@ -219,6 +223,10 @@ public class GraphLogProcessor {
                 return;
             }
 
+            if (!shouldProcessEvent(event)) {
+                return;
+            }
+
             // 4. Send event immediately (No buffering)
             sendEventToSinks(vertex.id().toString(), event);
 
@@ -339,5 +347,29 @@ public class GraphLogProcessor {
             }
         }
         return null;
+    }
+
+    /**
+     * Returns true if this event should be emitted; false if it is older than (or
+     * the same age as) an already-processed event for the same vertex.
+     * Updates the cache when the event is accepted.
+     */
+    private boolean shouldProcessEvent(Map<String, Object> event) {
+        String nodeId = getNodeUniqueId(event);
+        if (nodeId == null) {
+            return true;
+        }
+        Long eventTs = getLastUpdatedOn(event);
+        if (eventTs == null) {
+            return true;
+        }
+        Long cachedTs = lastUpdatedCache.get(nodeId);
+        if (cachedTs == null || eventTs > cachedTs) {
+            lastUpdatedCache.put(nodeId, eventTs);
+            return true;
+        }
+        logger.debug("Dropping out-of-order/duplicate event for node {} (event ts={}, cached ts={})",
+                nodeId, eventTs, cachedTs);
+        return false;
     }
 }
