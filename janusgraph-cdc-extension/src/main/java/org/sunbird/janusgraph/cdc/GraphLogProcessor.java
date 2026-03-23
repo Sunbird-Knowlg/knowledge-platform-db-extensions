@@ -87,7 +87,7 @@ public class GraphLogProcessor {
 
         logger.info("Starting GraphLogProcessor...");
 
-        // INitialize Converter
+        // Initialize Converter
         String converterType = (String) config.getOrDefault("graph.txn.log_processor.converter", "DEFAULT");
         if ("TELEMETRY".equalsIgnoreCase(converterType)) {
             converter = new TelemetryMessageConverter();
@@ -180,33 +180,37 @@ public class GraphLogProcessor {
         // This ensures edge-only changes are also discovered.
         Set<JanusGraphVertex> changedVertices = changeState.getVertices(Change.ANY);
 
-        // Count all relations in this ChangeState (edges + properties combined)
+        // Cache ADDED/REMOVED vertex sets once — avoids repeated getVertices() calls
+        // inside the loop and prevents re-consuming potentially single-use iterables.
+        Set<JanusGraphVertex> addedVertices = changeState.getVertices(Change.ADDED);
+        Set<JanusGraphVertex> removedVertices = changeState.getVertices(Change.REMOVED);
+
+        // Count all relations in this ChangeState for diagnostic logging
         int addedRelCount = 0;
         int removedRelCount = 0;
         for (JanusGraphRelation r : changeState.getRelations(Change.ADDED)) {
             addedRelCount++;
             if (r.isEdge()) {
-                logger.info("  ADDED relation (edge): type={}, vertices={}", r.getType().name(), r);
+                logger.debug("  ADDED relation (edge): type={}, vertices={}", r.getType().name(), r);
             }
         }
         for (JanusGraphRelation r : changeState.getRelations(Change.REMOVED)) {
             removedRelCount++;
             if (r.isEdge()) {
-                logger.info("  REMOVED relation (edge): type={}, vertices={}", r.getType().name(), r);
+                logger.debug("  REMOVED relation (edge): type={}, vertices={}", r.getType().name(), r);
             }
         }
         logger.info("ChangeState — vertices ADDED: {}, REMOVED: {}, ANY: {} | relations ADDED: {}, REMOVED: {}",
-                changeState.getVertices(Change.ADDED).size(),
-                changeState.getVertices(Change.REMOVED).size(),
-                changedVertices.size(),
+                addedVertices.size(), removedVertices.size(), changedVertices.size(),
                 addedRelCount, removedRelCount);
+
         for (JanusGraphVertex vertex : changedVertices) {
             // If it's a new vertex, we already processed it as CREATE
-            if (changeState.getVertices(Change.ADDED).contains(vertex)) {
+            if (addedVertices.contains(vertex)) {
                 continue;
             }
             // If it's a removed vertex, we already processed it as DELETE
-            if (changeState.getVertices(Change.REMOVED).contains(vertex)) {
+            if (removedVertices.contains(vertex)) {
                 continue;
             }
 
@@ -272,26 +276,6 @@ public class GraphLogProcessor {
             logger.error("Error serializing event", e);
             return false;
         }
-    }
-
-    private boolean hasStatusAttribute(Map<String, Object> event) {
-        try {
-            if (event.containsKey("transactionData")) {
-                Map<String, Object> txData = (Map<String, Object>) event.get("transactionData");
-                if (txData != null && txData.containsKey("properties")) {
-                    Map<String, Object> props = (Map<String, Object>) txData.get("properties");
-                    return props != null && props.containsKey("status");
-                }
-            }
-            // Check for flat properties (SimpleMessageConverter)
-            if (event.containsKey("properties")) {
-                Map<String, Object> props = (Map<String, Object>) event.get("properties");
-                return props != null && props.containsKey("status");
-            }
-        } catch (Exception e) {
-            // ignore
-        }
-        return false;
     }
 
     private String getNodeUniqueId(Map<String, Object> event) {
