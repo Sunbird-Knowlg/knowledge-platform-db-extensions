@@ -41,7 +41,15 @@ public class GraphLogProcessor {
 
     // Tracks the last-processed lastUpdatedOn (epoch ms) per nodeUniqueId
     // to filter out-of-order/duplicate events.
-    private final Map<String, Long> lastUpdatedCache = new HashMap<>();
+    // Bounded to MAX_CACHE_SIZE entries (LRU eviction) to prevent unbounded heap growth.
+    private static final int MAX_CACHE_SIZE = 10_000;
+    private final Map<String, Long> lastUpdatedCache = Collections.synchronizedMap(
+            new LinkedHashMap<String, Long>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
+                    return size() > MAX_CACHE_SIZE;
+                }
+            });
 
     // Event buffering removed
 
@@ -146,6 +154,7 @@ public class GraphLogProcessor {
             }
         }
         sinks.clear();
+        lastUpdatedCache.clear();
         isStarted = false;
         logger.info("GraphLogProcessor stopped.");
     }
@@ -228,7 +237,12 @@ public class GraphLogProcessor {
             }
 
             // 4. Send event immediately (No buffering)
-            sendEventToSinks(vertex.id().toString(), event);
+            // Update cache only after a confirmed successful send to avoid
+            // dropping retries when the send fails.
+            boolean sent = sendEventToSinks(vertex.id().toString(), event);
+            if (sent) {
+                updateLastUpdatedCache(event);
+            }
 
         } catch (Exception e) {
             logger.error("Error converting/processing vertex change event", e);
@@ -236,9 +250,13 @@ public class GraphLogProcessor {
     }
 
     /**
-     * Send event to all configured sinks
+     * Send event to all configured sinks.
+     *
+     * @return true if serialization succeeded (even if individual sinks erred),
+     *         false if the event could not be serialized (so the cache should not
+     *         be advanced and the event may be retried).
      */
-    private void sendEventToSinks(String key, Map<String, Object> event) {
+    private boolean sendEventToSinks(String key, Map<String, Object> event) {
         try {
             String json = mapper.writeValueAsString(event);
             for (EventSink sink : sinks) {
@@ -249,8 +267,10 @@ public class GraphLogProcessor {
                 }
             }
             logger.info("Sent event: {}", json);
+            return true;
         } catch (Exception e) {
             logger.error("Error serializing event", e);
+            return false;
         }
     }
 
@@ -352,7 +372,8 @@ public class GraphLogProcessor {
     /**
      * Returns true if this event should be emitted; false if it is older than (or
      * the same age as) an already-processed event for the same vertex.
-     * Updates the cache when the event is accepted.
+     * Does NOT update the cache — call {@link #updateLastUpdatedCache} after a
+     * confirmed successful send.
      */
     private boolean shouldProcessEvent(Map<String, Object> event) {
         String nodeId = getNodeUniqueId(event);
@@ -365,11 +386,26 @@ public class GraphLogProcessor {
         }
         Long cachedTs = lastUpdatedCache.get(nodeId);
         if (cachedTs == null || eventTs > cachedTs) {
-            lastUpdatedCache.put(nodeId, eventTs);
             return true;
         }
         logger.debug("Dropping out-of-order/duplicate event for node {} (event ts={}, cached ts={})",
                 nodeId, eventTs, cachedTs);
         return false;
+    }
+
+    /**
+     * Advances the cache for the event's nodeUniqueId to its lastUpdatedOn
+     * timestamp. Call this only after the event has been successfully sent.
+     */
+    private void updateLastUpdatedCache(Map<String, Object> event) {
+        String nodeId = getNodeUniqueId(event);
+        if (nodeId == null) {
+            return;
+        }
+        Long eventTs = getLastUpdatedOn(event);
+        if (eventTs == null) {
+            return;
+        }
+        lastUpdatedCache.put(nodeId, eventTs);
     }
 }
