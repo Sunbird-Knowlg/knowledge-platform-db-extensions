@@ -24,6 +24,8 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
     private static final ObjectMapper mapper = new ObjectMapper();
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
             .withZone(ZoneId.systemDefault());
+    private static final String[] LABEL_KEYS = {"name", "lemma", "title", "gloss"};
+    private static final String[] USER_ID_KEYS = {"lastUpdatedBy", "createdBy"};
 
     // Fields that should remain as JSON strings (loaded from config)
     private static final Set<String> STRING_ONLY_FIELDS = new HashSet<>();
@@ -115,17 +117,26 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
 
         map.put("transactionData", transactionData);
 
-        // Derived Fields — for DELETE read from the removed-property snapshot since
-        // the vertex is already gone; for CREATE/UPDATE read from the live vertex.
+        // Derived Fields:
+        // - DELETE: read from removed-property snapshot (vertex already gone in this TX)
+        // - UPDATE: read from propertiesMap (transaction log) first, fall back to vertex.
+        //   The vertex may have been deleted by a subsequent transaction before CDC
+        //   processes this one (e.g. publish job: updateProcessingNode → deleteNode).
+        // - CREATE: read from live vertex (just created, always exists)
         boolean isDelete = "DELETE".equals(operationType);
+        boolean isUpdate = "UPDATE".equals(operationType);
         map.put("createdOn", DATE_FORMATTER.format(Instant.now()));
         map.put("channel", isDelete ? getFromSnapshot(deletedProps, "channel", "all")
+                : isUpdate ? getFromPropertiesOrVertex(propertiesMap, vertex, "channel", "all")
                 : getVertexProperty(vertex, "channel", "all"));
         map.put("label", isDelete ? getLabelFromSnapshot(deletedProps, vertex)
+                : isUpdate ? getLabelFromPropertiesOrVertex(propertiesMap, vertex)
                 : getLabel(vertex));
         map.put("nodeType", isDelete ? getFromSnapshot(deletedProps, "IL_SYS_NODE_TYPE", "DATA_NODE")
+                : isUpdate ? getFromPropertiesOrVertex(propertiesMap, vertex, "IL_SYS_NODE_TYPE", "DATA_NODE")
                 : getVertexProperty(vertex, "IL_SYS_NODE_TYPE", "DATA_NODE"));
         String objectType = isDelete ? getFromSnapshot(deletedProps, "IL_FUNC_OBJECT_TYPE", vertex.label())
+                : isUpdate ? getFromPropertiesOrVertex(propertiesMap, vertex, "IL_FUNC_OBJECT_TYPE", vertex.label())
                 : getVertexProperty(vertex, "IL_FUNC_OBJECT_TYPE", vertex.label());
         // Filter out internal JanusGraph vertices that have no IL_FUNC_OBJECT_TYPE set
         // (their label falls back to TinkerPop's default "vertex")
@@ -136,8 +147,11 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
         }
         map.put("objectType", objectType);
         map.put("nodeUniqueId", isDelete ? getFromSnapshot(deletedProps, "IL_UNIQUE_ID", vertex.id().toString())
+                : isUpdate ? getFromPropertiesOrVertex(propertiesMap, vertex, "IL_UNIQUE_ID", vertex.id().toString())
                 : getVertexProperty(vertex, "IL_UNIQUE_ID", vertex.id().toString()));
-        map.put("userId", isDelete ? getUserIdFromSnapshot(deletedProps, vertex) : getUserId(vertex));
+        map.put("userId", isDelete ? getUserIdFromSnapshot(deletedProps, vertex)
+                : isUpdate ? getUserIdFromPropertiesOrVertex(propertiesMap, vertex)
+                : getUserId(vertex));
 
         // Filter unnecessary events for ROOT node
         // Only if there are NO added/removed relations
@@ -233,7 +247,7 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
 
     private String getLabel(JanusGraphVertex vertex) {
         // Legacy: name -> lemma -> title -> gloss
-        for (String key : new String[]{"name", "lemma", "title", "gloss"}) {
+        for (String key : LABEL_KEYS) {
             String val = getVertexProperty(vertex, key, null);
             if (val != null) return val;
         }
@@ -241,10 +255,10 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
     }
 
     private String getUserId(JanusGraphVertex vertex) {
-        String val = getVertexProperty(vertex, "lastUpdatedBy", null);
-        if (val != null) return val;
-        val = getVertexProperty(vertex, "createdBy", null);
-        if (val != null) return val;
+        for (String key : USER_ID_KEYS) {
+            String val = getVertexProperty(vertex, key, null);
+            if (val != null) return val;
+        }
         return "ANONYMOUS";
     }
 
@@ -270,7 +284,7 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
     }
 
     private String getLabelFromSnapshot(Map<String, Object> snapshot, JanusGraphVertex vertex) {
-        for (String key : new String[]{"name", "lemma", "title", "gloss"}) {
+        for (String key : LABEL_KEYS) {
             Object val = snapshot.get(key);
             if (val != null) return val.toString();
         }
@@ -278,10 +292,41 @@ public class SunbirdLegacyMessageConverter implements MessageConverter {
     }
 
     private String getUserIdFromSnapshot(Map<String, Object> snapshot, JanusGraphVertex vertex) {
-        Object val = snapshot.get("lastUpdatedBy");
-        if (val != null) return val.toString();
-        val = snapshot.get("createdBy");
-        if (val != null) return val.toString();
+        for (String key : USER_ID_KEYS) {
+            Object val = snapshot.get(key);
+            if (val != null) return val.toString();
+        }
+        return "ANONYMOUS";
+    }
+
+    // --- Helpers: read derived fields from propertiesMap (transaction log) first,
+    //     fall back to vertex. Handles race condition where vertex is deleted by a
+    //     subsequent transaction before CDC processes this UPDATE event. ---
+
+    @SuppressWarnings("unchecked")
+    private String getFromPropertiesOrVertex(Map<String, Object> propertiesMap, JanusGraphVertex vertex,
+            String key, String defaultValue) {
+        Object entry = propertiesMap.get(key);
+        if (entry instanceof Map) {
+            Object nv = ((Map<String, Object>) entry).get("nv");
+            if (nv != null) return nv.toString();
+        }
+        return getVertexProperty(vertex, key, defaultValue);
+    }
+
+    private String getLabelFromPropertiesOrVertex(Map<String, Object> propertiesMap, JanusGraphVertex vertex) {
+        for (String key : LABEL_KEYS) {
+            String val = getFromPropertiesOrVertex(propertiesMap, vertex, key, null);
+            if (val != null) return val;
+        }
+        return vertex.label();
+    }
+
+    private String getUserIdFromPropertiesOrVertex(Map<String, Object> propertiesMap, JanusGraphVertex vertex) {
+        for (String key : USER_ID_KEYS) {
+            String val = getFromPropertiesOrVertex(propertiesMap, vertex, key, null);
+            if (val != null) return val;
+        }
         return "ANONYMOUS";
     }
 
