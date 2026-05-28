@@ -11,7 +11,6 @@ import org.janusgraph.core.log.Change;
 import org.janusgraph.core.log.ChangeProcessor;
 import org.janusgraph.core.log.ChangeState;
 import org.janusgraph.core.log.LogProcessorFramework;
-import org.janusgraph.core.log.LogProcessorHandle;
 import org.janusgraph.core.log.TransactionId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,7 +38,7 @@ public class GraphLogProcessor {
     private List<EventSink> sinks = new ArrayList<>();
     private MessageConverter converter;
     private boolean isStarted = false;
-    private LogProcessorHandle logProcessorHandle;
+    private LogProcessorFramework logProcessorFramework;
 
     // Event buffering removed
 
@@ -107,8 +106,9 @@ public class GraphLogProcessor {
         }
 
         try {
-            LogProcessorFramework framework = JanusGraphFactory.openTransactionLog(graph);
-            this.logProcessorHandle = framework.addLogProcessor(LOG_IDENTIFIER)
+            // Store as instance field to prevent garbage collection
+            this.logProcessorFramework = JanusGraphFactory.openTransactionLog(graph);
+            this.logProcessorFramework.addLogProcessor(LOG_IDENTIFIER)
                     .setProcessorIdentifier("janusgraph-cdc-processor")
                     .setStartTime(Instant.now().minus(1, ChronoUnit.MINUTES))
                     .addProcessor(new ChangeProcessor() {
