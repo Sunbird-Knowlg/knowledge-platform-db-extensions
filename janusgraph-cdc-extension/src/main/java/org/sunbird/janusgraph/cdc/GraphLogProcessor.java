@@ -98,6 +98,11 @@ public class GraphLogProcessor {
             if ("LOG".equalsIgnoreCase(sinkType.trim())) {
                 sinks.add(new LogFileEventSink());
                 logger.info("Added Log File Event Sink");
+            } else if ("KAFKA".equalsIgnoreCase(sinkType.trim())) {
+                String bootstrapServers = (String) config.getOrDefault("kafka.bootstrap.servers", "kafka:9092");
+                String kafkaTopic = (String) config.getOrDefault("kafka.topics.graph.event", "test.knowlg.learning.graph.events");
+                sinks.add(new KafkaEventSink(bootstrapServers, kafkaTopic));
+                logger.info("Added Kafka Event Sink for topic: {}", kafkaTopic);
             }
         }
 
