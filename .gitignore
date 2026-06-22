@@ -4,4 +4,5 @@
 *.iml
 *.log
 neo4j-extensions/learning-graph-extension/dependency-reduced-pom.xml
+janusgraph-cdc-extension/target/
 
