@@ -9,33 +9,39 @@
 
 	<properties>
 		<neo4j.version>3.0.4</neo4j.version>
+		<!-- log4j 2.17.1 is the last line guaranteeing Java 8 and fully remediates the
+		     Log4Shell CVE chain (CVE-2021-44228/45046/45105/44832). Keep the three
+		     artifacts in lockstep via this property. -->
+		<log4j.version>2.17.1</log4j.version>
+		<!-- Jackson 2.17.x replaces the EOL 2.7.4 (polymorphic-deserialization CVEs); Java-8 compatible. -->
+		<jackson.version>2.17.2</jackson.version>
 	</properties>
 
 	<dependencies>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-1.2-api</artifactId>
-            <version>2.8.2</version>
+            <version>${log4j.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
-            <version>2.8.2</version>
+            <version>${log4j.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-core</artifactId>
-            <version>2.8.2</version>
+            <version>${log4j.version}</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
-            <version>2.7.4</version>
+            <version>${jackson.version}</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.7.4</version>
+            <version>${jackson.version}</version>
         </dependency>
 		<dependency>
 			<groupId>org.neo4j</groupId>
